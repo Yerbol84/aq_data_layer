@@ -1,0 +1,16 @@
+name: stack_server
+description: Data Service server with PostgreSQL and HTTP API
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  dart_vault:
+    path: ../../..
+  aq_schema:
+    path: ../../../../aq_schema
+  shelf: ^1.4.0
+  shelf_router: ^1.1.0
+  postgres: ^3.0.0

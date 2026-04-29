@@ -1,0 +1,13 @@
+name: client_example
+description: Thin client example using IDataLayer to connect to Data Service
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  dart_vault:
+    path: ../../..
+  aq_schema:
+    path: ../../../../aq_schema

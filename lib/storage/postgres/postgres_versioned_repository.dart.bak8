@@ -1,0 +1,786 @@
+import 'dart:convert';
+
+import 'package:postgres/postgres.dart';
+import 'package:aq_schema/aq_schema.dart';
+import 'package:meta/meta.dart';
+
+import '../../repositories/versioned_repository.dart';
+import '../../exceptions/vault_exceptions.dart';
+import '../versioned_storage_contract.dart';
+
+/// PostgreSQL-optimized implementation of [VersionedRepository].
+///
+/// Uses PostgreSQL-specific tables:
+/// - `{collection}_versions` — all version nodes
+/// - `{collection}_current` — current version pointer per entity
+///
+/// All field names use constants from [VersionedStorageContract].
+@internal
+final class PostgresVersionedRepository<T extends VersionedStorable>
+    implements VersionedRepository<T> {
+  final Pool _pool;
+  final String _collection;
+  final String _tenantId;
+  final T Function(Map<String, dynamic>) _fromMap;
+
+  late final String _versionsTable;
+  late final String _currentTable;
+
+  PostgresVersionedRepository({
+    required Pool pool,
+    required String collection,
+    required String tenantId,
+    required T Function(Map<String, dynamic>) fromMap,
+  })  : _pool = pool,
+        _collection = collection,
+        _tenantId = tenantId,
+        _fromMap = fromMap {
+    _versionsTable = VersionedStorageContract.versionsTable(collection);
+    _currentTable = VersionedStorageContract.currentTable(collection);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CREATE & EDIT
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Выполнить SQL запрос через пул соединений.
+  Future<Result> _execute(
+    String sql, {
+    List<Object?>? parameters,
+  }) async {
+    return await _pool.run((session) async {
+      return await connection.execute(sql, parameters: parameters);
+    });
+  }
+
+  /// Устанавливает tenant-контекст для текущей сессии.
+  /// RLS политики используют current_setting('app.current_tenant').
+  Future<void> _setTenantContext(TxSession session) async {
+    final escapedTenantId = _tenantId.replaceAll("'", "''");
+    await session.execute("SET LOCAL app.current_tenant = '$escapedTenantId'");
+  }
+
+  @override
+  Future<VersionNode> createEntity(T model) async {
+    final nodeId = _uuid();
+    final now = DateTime.now();
+
+    final node = VersionNode(
+      nodeId: nodeId,
+      entityId: model.id,
+      status: VersionStatus.draft,
+      sequenceNumber: 1,
+      createdBy: model.ownerId,
+      createdAt: now,
+      data: model.toMap(),
+      isCurrent: false,
+      branch: 'main',
+    );
+
+    // ВАЖНО: Используем транзакцию с RLS контекстом
+    await _pool.run((session) async {
+      await connection.runTx((session) async {
+        await _setTenantContext(session);
+        await session.execute(
+          '''
+          INSERT INTO $_versionsTable (
+            ${VersionedStorageContract.kNodeId},
+            ${VersionedStorageContract.kEntityId},
+            ${VersionedStorageContract.kTenantId},
+            ${VersionedStorageContract.kStatus},
+            ${VersionedStorageContract.kBranch},
+            ${VersionedStorageContract.kSequenceNumber},
+            ${VersionedStorageContract.kCreatedBy},
+            ${VersionedStorageContract.kCreatedAt},
+            ${VersionedStorageContract.kData}
+          ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9)
+          ''',
+          parameters: [
+            nodeId,
+            model.id,
+            _tenantId,
+            VersionStatus.draft.name,
+            'main',
+            1,
+            model.ownerId,
+            now,
+            model.toMap(),
+          ],
+        );
+      });
+    });
+
+    return node;
+  }
+
+  @override
+  Future<VersionNode> createDraftFrom(String parentNodeId, T model) async {
+    // Get parent node to inherit sequence number
+    final parent = await _getNodeById(parentNodeId);
+    if (parent == null) {
+      throw VaultNotFoundException('Parent node not found: $parentNodeId');
+    }
+
+    final nodeId = _uuid();
+    final now = DateTime.now();
+
+    final node = VersionNode(
+      nodeId: nodeId,
+      entityId: model.id,
+      parentNodeId: parentNodeId,
+      status: VersionStatus.draft,
+      sequenceNumber: parent.sequenceNumber + 1,
+      createdBy: model.ownerId,
+      createdAt: now,
+      data: model.toMap(),
+      isCurrent: false,
+      branch: parent.branch,
+    );
+
+    await _execute(
+      '''
+      INSERT INTO $_versionsTable (
+        ${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kEntityId},
+        ${VersionedStorageContract.kParentNodeId},
+        ${VersionedStorageContract.kTenantId},
+        ${VersionedStorageContract.kStatus},
+        ${VersionedStorageContract.kBranch},
+        ${VersionedStorageContract.kSequenceNumber},
+        ${VersionedStorageContract.kCreatedBy},
+        ${VersionedStorageContract.kCreatedAt},
+        ${VersionedStorageContract.kData}
+      ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
+      ''',
+      parameters: [
+        nodeId,
+        model.id,
+        parentNodeId,
+        _tenantId,
+        VersionStatus.draft.name,
+        parent.branch,
+        node.sequenceNumber,
+        model.ownerId,
+        now,
+        model.toMap(),
+      ],
+    );
+
+    return node;
+  }
+
+  @override
+  Future<void> updateDraft(String nodeId, T model) async {
+    await _pool.run((session) async {
+      await connection.runTx((session) async {
+        await _setTenantContext(session);
+        await session.execute(
+          '''
+          UPDATE $_versionsTable
+          SET ${VersionedStorageContract.kData} = \$1
+          WHERE ${VersionedStorageContract.kNodeId} = \$2
+            AND ${VersionedStorageContract.kTenantId} = \$3
+            AND ${VersionedStorageContract.kStatus} = \$4
+          ''',
+          parameters: [model.toMap(), nodeId, _tenantId, VersionStatus.draft.name],
+        );
+      });
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PUBLISH & ARCHIVE
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<VersionNode> publishDraft(
+    String nodeId, {
+    required IncrementType increment,
+  }) async {
+    return await _pool.run((session) async {
+      return await connection.runTx((session) async {
+        await _setTenantContext(session);
+
+        final node = await _getNodeByIdInSession(session, nodeId);
+        if (node == null) {
+          throw VaultNotFoundException('Node not found: $nodeId');
+        }
+
+        if (node.status != VersionStatus.draft) {
+          throw VaultStorageException('Only DRAFT nodes can be published');
+        }
+
+        // Calculate new version
+        final currentVersion = await _getLatestVersionInSession(session, node.entityId);
+        final newVersion = currentVersion == null
+            ? Semver(1, 0, 0)
+            : switch (increment) {
+              IncrementType.major => currentVersion.incrementMajor(),
+              IncrementType.minor => currentVersion.incrementMinor(),
+              IncrementType.patch => currentVersion.incrementPatch(),
+            };
+
+      // Update node to published
+      await session.execute(
+        '''
+        UPDATE $_versionsTable
+        SET ${VersionedStorageContract.kStatus} = \$1,
+            ${VersionedStorageContract.kVersion} = \$2
+        WHERE ${VersionedStorageContract.kNodeId} = \$3
+          AND ${VersionedStorageContract.kTenantId} = \$4
+        ''',
+        parameters: [VersionStatus.published.name, newVersion.toString(), nodeId, _tenantId],
+      );
+
+      // Set as current version
+      await _setCurrentVersionInSession(session, node.entityId, nodeId);
+
+      // Перечитать node из базы чтобы получить актуальные данные
+      final updatedNode = await _getNodeByIdInSession(session, nodeId);
+      if (updatedNode == null) {
+        throw VaultStorageException('Failed to read updated node after publish');
+      }
+
+      return updatedNode.copyWith(isCurrent: true);
+      });
+    });
+  }
+
+  @override
+  Future<VersionNode> snapshotVersion(String nodeId) async {
+    final node = await _getNodeById(nodeId);
+    if (node == null) {
+      throw VaultNotFoundException('Node not found: $nodeId');
+    }
+
+    await _execute(
+      '''
+      UPDATE $_versionsTable
+      SET ${VersionedStorageContract.kStatus} = \$1
+      WHERE ${VersionedStorageContract.kNodeId} = \$2
+        AND ${VersionedStorageContract.kTenantId} = \$3
+      ''',
+      parameters: [VersionStatus.snapshot.name, nodeId, _tenantId],
+    );
+
+    return node.copyWith(status: VersionStatus.snapshot);
+  }
+
+  @override
+  Future<void> deleteVersion(String nodeId) async {
+    await _execute(
+      '''
+      DELETE FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kNodeId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [nodeId, _tenantId],
+    );
+  }
+
+  @override
+  Future<void> deleteEntity(String entityId) async {
+    // Delete all versions
+    await _execute(
+      '''
+      DELETE FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+
+    // Delete current pointer
+    await _execute(
+      '''
+      DELETE FROM $_currentTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // BRANCHING
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<VersionNode> createBranch(
+    String parentNodeId, {
+    required String branchName,
+    required T model,
+  }) async {
+    final parent = await _getNodeById(parentNodeId);
+    if (parent == null) {
+      throw VaultNotFoundException('Parent node not found: $parentNodeId');
+    }
+
+    final nodeId = _uuid();
+    final now = DateTime.now();
+
+    final node = VersionNode(
+      nodeId: nodeId,
+      entityId: model.id,
+      parentNodeId: parentNodeId,
+      status: VersionStatus.draft,
+      sequenceNumber: parent.sequenceNumber + 1,
+      createdBy: model.ownerId,
+      createdAt: now,
+      data: model.toMap(),
+      isCurrent: false,
+      branch: branchName,
+    );
+
+    await _execute(
+      '''
+      INSERT INTO $_versionsTable (
+        ${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kEntityId},
+        ${VersionedStorageContract.kParentNodeId},
+        ${VersionedStorageContract.kTenantId},
+        ${VersionedStorageContract.kStatus},
+        ${VersionedStorageContract.kBranch},
+        ${VersionedStorageContract.kSequenceNumber},
+        ${VersionedStorageContract.kCreatedBy},
+        ${VersionedStorageContract.kCreatedAt},
+        ${VersionedStorageContract.kData}
+      ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
+      ''',
+      parameters: [
+        nodeId,
+        model.id,
+        parentNodeId,
+        _tenantId,
+        VersionStatus.draft.name,
+        branchName,
+        node.sequenceNumber,
+        model.ownerId,
+        now,
+        model.toMap(),
+      ],
+    );
+
+    return node;
+  }
+
+  @override
+  Future<VersionNode> mergeToMain(
+    String entityId, {
+    required String sourceBranch,
+    required String requesterId,
+    required T Function(Map<String, dynamic>) fromMap,
+  }) async {
+    // Get latest node from source branch
+    final result = await _execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+        AND ${VersionedStorageContract.kBranch} = \$3
+      ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+      LIMIT 1
+      ''',
+      parameters: [entityId, _tenantId, sourceBranch],
+    );
+
+    if (result.isEmpty) {
+      throw VaultNotFoundException('No nodes found in branch: $sourceBranch');
+    }
+
+    final sourceNode = _rowToVersionNode(result.first);
+    final model = fromMap(sourceNode.data);
+
+    // Create new draft on main branch
+    final nodeId = _uuid();
+    final now = DateTime.now();
+
+    await _execute(
+      '''
+      INSERT INTO $_versionsTable (
+        ${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kEntityId},
+        ${VersionedStorageContract.kParentNodeId},
+        ${VersionedStorageContract.kTenantId},
+        ${VersionedStorageContract.kStatus},
+        ${VersionedStorageContract.kBranch},
+        ${VersionedStorageContract.kSequenceNumber},
+        ${VersionedStorageContract.kCreatedBy},
+        ${VersionedStorageContract.kCreatedAt},
+        ${VersionedStorageContract.kData}
+      ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
+      ''',
+      parameters: [
+        nodeId,
+        entityId,
+        sourceNode.nodeId,
+        _tenantId,
+        VersionStatus.draft.name,
+        'main',
+        sourceNode.sequenceNumber + 1,
+        requesterId,
+        now,
+        sourceNode.data,
+      ],
+    );
+
+    return VersionNode(
+      nodeId: nodeId,
+      entityId: entityId,
+      parentNodeId: sourceNode.nodeId,
+      status: VersionStatus.draft,
+      sequenceNumber: sourceNode.sequenceNumber + 1,
+      createdBy: requesterId,
+      createdAt: now,
+      data: sourceNode.data,
+      isCurrent: false,
+      branch: 'main',
+    );
+  }
+
+  @override
+  Future<List<String>> listBranches(String entityId) async {
+    final result = await _execute(
+      '''
+      SELECT DISTINCT ${VersionedStorageContract.kBranch}
+      FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+
+    return result.map((row) => row[0] as String).toList();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CURRENT VERSION
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<void> setCurrentVersion(
+    String entityId,
+    String nodeId, {
+    required String requesterId,
+  }) async {
+    await _setCurrentVersion(entityId, nodeId);
+  }
+
+  @override
+  Future<T?> getCurrent(String entityId) async {
+    final result = await _execute(
+      '''
+      SELECT v.* FROM $_versionsTable v
+      INNER JOIN $_currentTable c
+        ON v.${VersionedStorageContract.kNodeId} = c.${VersionedStorageContract.kNodeId}
+      WHERE c.${VersionedStorageContract.kEntityId} = \$1
+        AND c.${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+
+    if (result.isEmpty) return null;
+
+    final node = _rowToVersionNode(result.first);
+    return _fromMap(node.data);
+  }
+
+  @override
+  Future<T?> getVersion(String nodeId) async {
+    final node = await _getNodeById(nodeId);
+    if (node == null) return null;
+    return _fromMap(node.data);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ACCESS CONTROL (Simplified - full implementation needed)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<void> grantAccess(
+    String entityId, {
+    required String actorId,
+    required AccessLevel level,
+    required String requesterId,
+  }) async {
+    // TODO: Implement access control in separate table
+    throw UnimplementedError('Access control not yet implemented');
+  }
+
+  @override
+  Future<void> revokeAccess(
+    String entityId, {
+    required String actorId,
+    required String requesterId,
+  }) async {
+    throw UnimplementedError('Access control not yet implemented');
+  }
+
+  @override
+  Future<bool> hasAccess(
+    String entityId, {
+    required String actorId,
+    required AccessLevel minimumLevel,
+  }) async {
+    // For now, allow all access
+    return true;
+  }
+
+  @override
+  Future<List<AccessGrant>> listGrants(String entityId) async {
+    return [];
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // QUERIES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<List<VersionNode>> listVersions(
+    String entityId, {
+    VersionStatus? status,
+    String? branch,
+  }) async {
+    final conditions = <String>[
+      '${VersionedStorageContract.kEntityId} = \$1',
+      '${VersionedStorageContract.kTenantId} = \$2',
+    ];
+    final params = <dynamic>[entityId, _tenantId];
+
+    if (status != null) {
+      conditions.add('${VersionedStorageContract.kStatus} = \$${params.length + 1}');
+      params.add(status.name);
+    }
+
+    if (branch != null) {
+      conditions.add('${VersionedStorageContract.kBranch} = \$${params.length + 1}');
+      params.add(branch);
+    }
+
+    final result = await _execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+      ''',
+      parameters: params,
+    );
+
+    return result.map(_rowToVersionNode).toList();
+  }
+
+  @override
+  Future<List<VersionNode>> findNodes({VaultQuery? query}) async {
+    // Simplified implementation
+    final result = await _execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kTenantId} = \$1
+      ORDER BY ${VersionedStorageContract.kCreatedAt} DESC
+      ''',
+      parameters: [_tenantId],
+    );
+
+    return result.map(_rowToVersionNode).toList();
+  }
+
+  @override
+  Future<PageResult<VersionNode>> findNodesPage(VaultQuery query) async {
+    final nodes = await findNodes(query: query);
+    return PageResult(
+      items: nodes,
+      total: nodes.length,
+      offset: query.offset ?? 0,
+      limit: query.limit ?? nodes.length,
+    );
+  }
+
+  @override
+  Future<VersionNode?> getLatestPublished(String entityId) async {
+    final result = await _execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+        AND ${VersionedStorageContract.kStatus} = \$3
+      ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+      LIMIT 1
+      ''',
+      parameters: [entityId, _tenantId, VersionStatus.published.name],
+    );
+
+    if (result.isEmpty) return null;
+    return _rowToVersionNode(result.first);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // INDEXES & STREAMS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  @override
+  Future<void> registerIndex(VaultIndex index) async {
+    // Indexes are managed by PostgresSchemaDeployer
+  }
+
+  @override
+  Stream<List<VersionNode>> watchVersions(String entityId) {
+    // TODO: Implement using PostgreSQL LISTEN/NOTIFY
+    return Stream.empty();
+  }
+
+  @override
+  Stream<List<VersionNode>> watchAllEntities({VaultQuery? query}) {
+    // TODO: Implement using PostgreSQL LISTEN/NOTIFY
+    return Stream.empty();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // HELPER METHODS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Future<VersionNode?> _getNodeById(String nodeId) async {
+    final result = await _execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kNodeId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [nodeId, _tenantId],
+    );
+
+    if (result.isEmpty) return null;
+    return _rowToVersionNode(result.first);
+  }
+
+  Future<void> _setCurrentVersion(String entityId, String nodeId) async {
+    await _execute(
+      '''
+      INSERT INTO $_currentTable (
+        ${VersionedStorageContract.kEntityId},
+        ${VersionedStorageContract.kTenantId},
+        ${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kUpdatedAt}
+      ) VALUES (\$1, \$2, \$3, NOW())
+      ON CONFLICT (${VersionedStorageContract.kEntityId}, ${VersionedStorageContract.kTenantId})
+      DO UPDATE SET
+        ${VersionedStorageContract.kNodeId} = EXCLUDED.${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kUpdatedAt} = NOW()
+      ''',
+      parameters: [entityId, _tenantId, nodeId],
+    );
+  }
+
+  Future<Semver?> _getLatestVersion(String entityId) async {
+    final result = await _execute(
+      '''
+      SELECT ${VersionedStorageContract.kVersion}
+      FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+        AND ${VersionedStorageContract.kVersion} IS NOT NULL
+      ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+      LIMIT 1
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+
+    if (result.isEmpty) return null;
+    final versionStr = result.first[0] as String?;
+    return versionStr != null ? Semver.parse(versionStr) : null;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Transaction-aware helper methods
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Future<VersionNode?> _getNodeByIdInSession(TxSession session, String nodeId) async {
+    final result = await session.execute(
+      '''
+      SELECT * FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kNodeId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+      ''',
+      parameters: [nodeId, _tenantId],
+    );
+
+    if (result.isEmpty) return null;
+    return _rowToVersionNode(result.first);
+  }
+
+  Future<void> _setCurrentVersionInSession(TxSession session, String entityId, String nodeId) async {
+    await session.execute(
+      '''
+      INSERT INTO $_currentTable (
+        ${VersionedStorageContract.kEntityId},
+        ${VersionedStorageContract.kTenantId},
+        ${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kUpdatedAt}
+      ) VALUES (\$1, \$2, \$3, NOW())
+      ON CONFLICT (${VersionedStorageContract.kEntityId}, ${VersionedStorageContract.kTenantId})
+      DO UPDATE SET
+        ${VersionedStorageContract.kNodeId} = EXCLUDED.${VersionedStorageContract.kNodeId},
+        ${VersionedStorageContract.kUpdatedAt} = NOW()
+      ''',
+      parameters: [entityId, _tenantId, nodeId],
+    );
+  }
+
+  Future<Semver?> _getLatestVersionInSession(TxSession session, String entityId) async {
+    final result = await session.execute(
+      '''
+      SELECT ${VersionedStorageContract.kVersion}
+      FROM $_versionsTable
+      WHERE ${VersionedStorageContract.kEntityId} = \$1
+        AND ${VersionedStorageContract.kTenantId} = \$2
+        AND ${VersionedStorageContract.kVersion} IS NOT NULL
+      ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+      LIMIT 1
+      ''',
+      parameters: [entityId, _tenantId],
+    );
+
+    if (result.isEmpty) return null;
+    final versionStr = result.first[0] as String?;
+    return versionStr != null ? Semver.parse(versionStr) : null;
+  }
+
+  VersionNode _rowToVersionNode(ResultRow row) {
+    final cols = row.toColumnMap();
+
+    // PostgreSQL JSONB колонка возвращается как Map напрямую
+    // Если это String — декодируем JSON
+    final rawData = cols[VersionedStorageContract.kData];
+    final Map<String, dynamic> data;
+    if (rawData is String) {
+      data = jsonDecode(rawData) as Map<String, dynamic>;
+    } else if (rawData is Map) {
+      data = Map<String, dynamic>.from(rawData);
+    } else {
+      throw VaultStorageException(
+        'Invalid data type in database: ${rawData.runtimeType}. Expected Map or JSON String.',
+      );
+    }
+
+    return VersionNode(
+      nodeId: cols[VersionedStorageContract.kNodeId] as String,
+      entityId: cols[VersionedStorageContract.kEntityId] as String,
+      parentNodeId: cols[VersionedStorageContract.kParentNodeId] as String?,
+      status: VersionStatus.fromString(cols[VersionedStorageContract.kStatus] as String),
+      version: cols[VersionedStorageContract.kVersion] != null
+          ? Semver.parse(cols[VersionedStorageContract.kVersion] as String)
+          : null,
+      sequenceNumber: cols[VersionedStorageContract.kSequenceNumber] as int,
+      createdBy: cols[VersionedStorageContract.kCreatedBy] as String,
+      createdAt: cols[VersionedStorageContract.kCreatedAt] as DateTime,
+      data: data,
+      isCurrent: false, // Will be set by getCurrent if needed
+      branch: cols[VersionedStorageContract.kBranch] as String,
+    );
+  }
+
+  String _uuid() {
+    // Simple UUID v4 generator
+    final random = DateTime.now().millisecondsSinceEpoch;
+    return 'node_${random}_${_tenantId.hashCode.abs()}';
+  }
+}

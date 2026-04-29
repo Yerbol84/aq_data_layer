@@ -1,0 +1,23 @@
+name: dart_vault
+version: 0.4.0
+description: >
+  Universal, interface-driven data storage for Dart.
+  Direct (CRUD), Versioned (semver + branches + ACL), Logged (history + rollback),
+  Artifact (files), Vector (ANN search), Knowledge (file + vector).
+  Multi-tenant with RLS. Zero mandatory dependencies.
+homepage: https://github.com/yourorg/dart_vault
+publish_to: none
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  aq_schema:
+    path:
+      ../aq_schema
+  postgres: ^3.5.9
+  meta: ^1.9.0
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0
