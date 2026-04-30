@@ -18,7 +18,6 @@ void main() async {
   print('🚀 Starting Data Service Server...');
   print('📊 Database: $dbHost:$dbPort/$dbName');
 
-  // Create PostgreSQL connection pool
   final pool = Pool.withEndpoints(
     [
       Endpoint(
@@ -35,7 +34,7 @@ void main() async {
     ),
   );
 
-  // Initialize VaultRegistry with PostgreSQL
+  // Register ALL AQ platform domains from AqDomains.all (single source of truth)
   final registry = VaultRegistry(
     storageFactory: (tenantId) => PostgresVaultStorage(
       pool: pool,
@@ -44,43 +43,22 @@ void main() async {
     deployer: PostgresSchemaDeployer(pool: pool),
   );
 
-  // Register domains
-  registry.register(DomainRegistration(
-    collection: AqStudioProject.kCollection,
-    mode: StorageMode.direct,
-    fromMap: AqStudioProject.fromMap,
-    jsonSchema: AqStudioProject.kJsonSchema,
-    schemaVersion: AqStudioProject.kSchemaVersion,
-  ));
+  for (final domain in AqDomains.all) {
+    registry.register(DomainRegistration(
+      collection: domain.collection,
+      mode: _toStorageMode(domain.kind),
+      fromMap: domain.fromMap,
+      indexes: domain.indexes,
+      jsonSchema: const {'type': 'object'}, // schema managed by model itself
+    ));
+  }
 
-  registry.register(DomainRegistration(
-    collection: WorkflowRun.kCollection,
-    mode: StorageMode.logged,
-    fromMap: WorkflowRun.fromMap,
-    jsonSchema: WorkflowRun.kJsonSchema,
-  ));
-
-  registry.register(DomainRegistration(
-    collection: TestDocumentV1.kCollection,
-    mode: StorageMode.direct,
-    fromMap: TestDocumentV1.fromMap,
-    jsonSchema: const {
-      'type': 'object',
-      'properties': {
-        'id': {'type': 'string'},
-        'tenantId': {'type': 'string'},
-        'title': {'type': 'string'},
-        'content': {'type': 'string'},
-      },
-      'required': ['id', 'tenantId', 'title', 'content'],
-    },
-  ));
-
-  // Deploy schemas
   await registry.deploy();
-  print('✅ Schemas deployed');
+  print('✅ Schemas deployed (${registry.registrations.length} domains)');
+  for (final r in registry.registrations) {
+    print('   • ${r.collection} [${r.mode.name}]');
+  }
 
-  // Setup HTTP routes using VaultApiContract
   final contract = VaultApiContract();
   final router = Router()
     ..post(contract.getFullRoute('handshake'), _handleHandshake(registry))
@@ -94,11 +72,6 @@ void main() async {
 
   final server = await io.serve(handler, '0.0.0.0', serverPort);
   print('✅ Server running on http://${server.address.host}:${server.port}');
-  print('📋 API Version: ${contract.apiVersion}');
-  print('📋 Routes:');
-  print('   ${contract.getFullRoute('handshake')}');
-  print('   ${contract.getFullRoute('rpc')}');
-  print('   ${contract.getFullRoute('health')}');
 }
 
 Handler _handleHandshake(VaultRegistry registry) {
@@ -106,12 +79,9 @@ Handler _handleHandshake(VaultRegistry registry) {
     try {
       final body = await request.readAsString();
       final json = jsonDecode(body) as Map<String, dynamic>;
-
       final tenantId = json['tenantId'] as String;
-      final response = registry.buildHandshake(tenantId);
-
       return Response.ok(
-        jsonEncode(response),
+        jsonEncode(registry.buildHandshake(tenantId)),
         headers: {'Content-Type': 'application/json'},
       );
     } catch (e) {
@@ -126,102 +96,53 @@ Handler _handleHandshake(VaultRegistry registry) {
 Handler _handleRpc(VaultRegistry registry) {
   return (Request request) async {
     try {
-      final body = await request.readAsString();
-      print('📥 RPC Request received:');
-      print('   Body length: ${body.length} bytes');
-      print('   Body: ${body.substring(0, body.length > 500 ? 500 : body.length)}');
-
-      final json = jsonDecode(body) as Map<String, dynamic>;
-
-      final collection = json['collection'] as String;
-      final operation = json['operation'] as String;
-      final args = json['args'] as Map<String, dynamic>;
-      final tenantId = json['tenantId'] as String;
-
-      print('   Collection: $collection');
-      print('   Operation: $operation');
-      print('   TenantId: $tenantId');
-      print('   Args keys: ${args.keys.join(", ")}');
-
-      final response = await registry.dispatch(
-        collection: collection,
-        operation: operation,
-        args: args,
-        tenantId: tenantId,
+      final json = jsonDecode(await request.readAsString()) as Map<String, dynamic>;
+      final result = await registry.dispatch(
+        collection: json['collection'] as String,
+        operation: json['operation'] as String,
+        args: json['args'] as Map<String, dynamic>,
+        tenantId: json['tenantId'] as String,
       );
-
-      print('📤 RPC Response:');
-      print('   Response type: ${response.runtimeType}');
-      print('   Response: $response');
-
-      // Wrap response in VaultRpcResponse format
-      final responseData = {
-        'success': true,
-        'data': response,
-      };
-
-      final responseJson = jsonEncode(responseData);
-      print('   JSON length: ${responseJson.length} bytes');
-      print('   JSON: ${responseJson.substring(0, responseJson.length > 500 ? 500 : responseJson.length)}');
-
       return Response.ok(
-        responseJson,
+        jsonEncode({'success': true, 'data': result}),
         headers: {'Content-Type': 'application/json'},
       );
-    } catch (e, stack) {
-      print('❌ RPC Error: $e');
-      print('   Stack: $stack');
-
-      // Wrap error in VaultRpcResponse format
-      final errorResponse = {
-        'success': false,
-        'error': e.toString(),
-        'errorCode': _getErrorCode(e),
-      };
-
+    } catch (e) {
       return Response.internalServerError(
-        body: jsonEncode(errorResponse),
+        body: jsonEncode({'success': false, 'error': e.toString(), 'errorCode': _errorCode(e)}),
         headers: {'Content-Type': 'application/json'},
       );
     }
   };
 }
 
-Response _handleHealth(Request request) {
-  return Response.ok(
-    jsonEncode({'status': 'healthy', 'timestamp': DateTime.now().toIso8601String()}),
-    headers: {'Content-Type': 'application/json'},
-  );
-}
+Response _handleHealth(Request request) => Response.ok(
+      jsonEncode({'status': 'healthy', 'timestamp': DateTime.now().toIso8601String()}),
+      headers: {'Content-Type': 'application/json'},
+    );
 
 Middleware _corsHeaders() {
-  return (Handler handler) {
-    return (Request request) async {
-      if (request.method == 'OPTIONS') {
-        return Response.ok('', headers: _corsHeadersMap);
-      }
-      final response = await handler(request);
-      return response.change(headers: _corsHeadersMap);
-    };
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
+  return (handler) => (request) async {
+        if (request.method == 'OPTIONS') return Response.ok('', headers: headers);
+        return (await handler(request)).change(headers: headers);
+      };
 }
 
-final _corsHeadersMap = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
-
-String _getErrorCode(Object error) {
-  final errorStr = error.toString();
-  if (errorStr.contains('not found') || errorStr.contains('NotFoundException')) {
-    return 'NOT_FOUND';
-  }
-  if (errorStr.contains('access denied') || errorStr.contains('AccessDeniedException')) {
-    return 'ACCESS_DENIED';
-  }
-  if (errorStr.contains('state') || errorStr.contains('StateException')) {
-    return 'STATE_ERROR';
-  }
+String _errorCode(Object e) {
+  final s = e.toString();
+  if (s.contains('not found') || s.contains('NotFoundException')) return 'NOT_FOUND';
+  if (s.contains('access denied')) return 'ACCESS_DENIED';
+  if (s.contains('state') || s.contains('StateException')) return 'STATE_ERROR';
   return 'STORAGE_ERROR';
 }
+
+StorageMode _toStorageMode(StorageKind kind) => switch (kind) {
+      StorageKind.direct => StorageMode.direct,
+      StorageKind.versioned => StorageMode.versioned,
+      StorageKind.logged => StorageMode.logged,
+    };

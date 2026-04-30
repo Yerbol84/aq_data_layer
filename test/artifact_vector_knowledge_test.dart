@@ -582,6 +582,9 @@ class _KbDoc implements KnowledgeDocument {
   String get collectionName => throw UnimplementedError();
 
   @override
+  bool get softDelete => false;
+
+  @override
   // TODO: implement jsonSchema
   Map<String, dynamic> get jsonSchema => throw UnimplementedError();
 }

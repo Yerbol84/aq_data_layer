@@ -6,7 +6,6 @@
 import 'package:aq_schema/aq_schema.dart';
 import 'vault.dart';
 import 'remote/remote_vault_storage.dart';
-import '../storage/in_memory_vault_storage.dart';
 import '../storage/local_buffer_vault_storage.dart';
 
 /// Implementation of [IDataLayer] that wraps [Vault].

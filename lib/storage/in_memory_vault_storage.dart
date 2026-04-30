@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 /// In-memory [VaultStorage] implementation.
 ///
@@ -15,7 +14,6 @@ import 'package:meta/meta.dart';
 ///
 /// **Not** suitable for production persistence — data is lost on process exit.
 /// Use as a drop-in for tests and demos, or replace with [PostgresVaultStorage].
-@internal
 final class InMemoryVaultStorage implements VaultStorage {
   // collection → { id → _InMemoryRecord }
   final _store = <String, Map<String, _InMemoryRecord>>{};

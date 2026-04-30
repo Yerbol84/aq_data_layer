@@ -1,9 +1,7 @@
 import 'dart:async';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
-import '../storage/local_buffer_vault_storage.dart';
 import '../exceptions/vault_exceptions.dart';
 
 // ── Watch-stream race-condition fix (see direct_repository_impl.dart) ──────────
@@ -31,7 +29,6 @@ Stream<List<T>> _watchWithBuffer<T>(
 /// Two internal collections:
 /// - `{collection}`       — current entity state
 /// - `{collection}_log`  — [LogEntry] records (append-only)
-@internal
 final class LoggedRepositoryImpl<T extends LoggedStorable>
     implements LoggedRepository<T> {
   final VaultStorage _storage;
@@ -62,122 +59,83 @@ final class LoggedRepositoryImpl<T extends LoggedStorable>
 
   @override
   Future<void> save(T entity, {required String actorId}) async {
-    final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
-        : _storage;
+    await _ensureCollections();
 
-    if (baseStorage is ProxyStorage) {
-      // Remote: вызываем RPC напрямую, сервер создаст log entry
-      await (baseStorage as dynamic).rpc(
-        _collection,
-        'put',
-        {
-          'data': entity.toMap(),
-          'actorId': actorId,
-        },
-      );
-    } else {
-      // Local: создаём log entry вручную
-      await _ensureCollections();
+    final existing = await _storage.get(_collection, entity.id);
+    final operation =
+        existing == null ? LogOperation.created : LogOperation.updated;
 
-      final existing = await _storage.get(_collection, entity.id);
-      final operation =
-          existing == null ? LogOperation.created : LogOperation.updated;
+    await _storage.put(_collection, entity.id, entity.toMap());
 
-      await _storage.put(_collection, entity.id, entity.toMap());
-
-      if (entity.indexFields.isNotEmpty) {
-        await _storage.updateIndex(_collection, entity.id, entity.indexFields);
-      }
-
-      final diff = _computeDiff(
-        existing,
-        entity.toMap(),
-        trackedFields:
-            entity.trackedFields.isEmpty ? null : entity.trackedFields,
-      );
-
-      final entry = LogEntry(
-        entryId: _uuid(),
-        entityId: entity.id,
-        collectionId: _collection,
-        changedBy: actorId,
-        changedAt: DateTime.now(),
-        operation: operation,
-        diff: diff,
-        snapshot: _captureFullSnapshot ? Map.from(entity.toMap()) : null,
-      );
-
-      await _storage.put(_logCollection, entry.entryId, entry.toMap());
+    if (entity.indexFields.isNotEmpty) {
+      await _storage.updateIndex(_collection, entity.id, entity.indexFields);
     }
+
+    final diff = _computeDiff(
+      existing,
+      entity.toMap(),
+      trackedFields: entity.trackedFields.isEmpty ? null : entity.trackedFields,
+    );
+
+    final entry = LogEntry(
+      entryId: _uuid(),
+      entityId: entity.id,
+      collectionId: _collection,
+      changedBy: actorId,
+      changedAt: DateTime.now(),
+      operation: operation,
+      diff: diff,
+      // Always snapshot on create — required for getStateAt reconstruction.
+      // Also snapshot on every update if captureFullSnapshot is enabled.
+      snapshot: (operation == LogOperation.created || _captureFullSnapshot)
+          ? Map.from(entity.toMap())
+          : null,
+    );
+
+    await _storage.put(_logCollection, entry.entryId, entry.toMap());
   }
 
   @override
   Future<void> delete(String entityId, {required String actorId}) async {
-    final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
-        : _storage;
+    await _ensureCollections();
 
-    if (baseStorage is ProxyStorage) {
-      // Remote: server handles soft/hard delete logic
-      await (baseStorage as dynamic).rpc(
-        _collection,
-        'delete',
-        {
-          'id': entityId,
-          'actorId': actorId,
-        },
+    final existing = await _storage.get(_collection, entityId);
+    if (existing == null) return;
+
+    final entity = _fromMap(existing);
+
+    if (entity.softDelete) {
+      final map = entity.toMap();
+      map['deletedAt'] = DateTime.now().toIso8601String();
+      await _storage.put(_collection, entityId, map);
+
+      final entry = LogEntry(
+        entryId: _uuid(),
+        entityId: entityId,
+        collectionId: _collection,
+        changedBy: actorId,
+        changedAt: DateTime.now(),
+        operation: LogOperation.updated,
+        diff: {'deletedAt': FieldDiff(before: null, after: map['deletedAt'])},
+        snapshot: null,
       );
+      await _storage.put(_logCollection, entry.entryId, entry.toMap());
+      await _logDeletion(entity, deleteType: 'soft', actorId: actorId);
     } else {
-      // Local: handle soft/hard delete
-      await _ensureCollections();
+      await _logDeletion(entity, deleteType: 'hard', actorId: actorId);
+      await _storage.delete(_collection, entityId);
 
-      final existing = await _storage.get(_collection, entityId);
-      if (existing == null) return;
-
-      final entity = _fromMap(existing);
-
-      if (entity.softDelete) {
-        // SOFT DELETE: Mark as deleted
-        final map = entity.toMap();
-        map['deletedAt'] = DateTime.now().toIso8601String();
-        await _storage.put(_collection, entityId, map);
-
-        // Create log entry for soft delete
-        final entry = LogEntry(
-          entryId: _uuid(),
-          entityId: entityId,
-          collectionId: _collection,
-          changedBy: actorId,
-          changedAt: DateTime.now(),
-          operation: LogOperation.updated,
-          diff: {
-            'deletedAt': FieldDiff(before: null, after: map['deletedAt'])
-          },
-          snapshot: null,
-        );
-        await _storage.put(_logCollection, entry.entryId, entry.toMap());
-
-        // Log to deleted table
-        await _logDeletion(entity, deleteType: 'soft', actorId: actorId);
-      } else {
-        // HARD DELETE: Remove from DB
-        await _logDeletion(entity, deleteType: 'hard', actorId: actorId);
-        await _storage.delete(_collection, entityId);
-
-        // Create log entry for hard delete
-        final entry = LogEntry(
-          entryId: _uuid(),
-          entityId: entityId,
-          collectionId: _collection,
-          changedBy: actorId,
-          changedAt: DateTime.now(),
-          operation: LogOperation.deleted,
-          diff: _computeDiff(existing, null),
-          snapshot: null,
-        );
-        await _storage.put(_logCollection, entry.entryId, entry.toMap());
-      }
+      final entry = LogEntry(
+        entryId: _uuid(),
+        entityId: entityId,
+        collectionId: _collection,
+        changedBy: actorId,
+        changedAt: DateTime.now(),
+        operation: LogOperation.deleted,
+        diff: _computeDiff(existing, null),
+        snapshot: null,
+      );
+      await _storage.put(_logCollection, entry.entryId, entry.toMap());
     }
   }
 
@@ -338,6 +296,8 @@ final class LoggedRepositoryImpl<T extends LoggedStorable>
       } else if (entry.snapshot != null) {
         state = Map<String, dynamic>.from(entry.snapshot!);
       } else {
+        // Build state by accumulating all diffs from the beginning.
+        // First entry (created) contains diffs for all initial fields.
         state ??= {};
         for (final diffEntry in entry.diff.entries) {
           state[diffEntry.key] = diffEntry.value.after;
@@ -413,8 +373,7 @@ final class LoggedRepositoryImpl<T extends LoggedStorable>
       rollbackToEntryId: entryId,
     );
 
-    await _storage.put(
-        _logCollection, rollbackEntry.entryId, rollbackEntry.toMap());
+    await _storage.put(_logCollection, rollbackEntry.entryId, rollbackEntry.toMap());
   }
 
   // ── Indexes ────────────────────────────────────────────────────────────────
@@ -447,11 +406,13 @@ final class LoggedRepositoryImpl<T extends LoggedStorable>
   }) {
     final diff = <String, FieldDiff>{};
     final allKeys = <String>{...?before?.keys, ...?after?.keys};
+    // On create (before == null) include all fields — needed for getStateAt reconstruction.
+    final effectiveTracked = before == null ? null : trackedFields;
 
     for (final key in allKeys) {
-      if (trackedFields != null &&
-          trackedFields.isNotEmpty &&
-          !trackedFields.contains(key)) continue;
+      if (effectiveTracked != null &&
+          effectiveTracked.isNotEmpty &&
+          !effectiveTracked.contains(key)) continue;
 
       final bv = before?[key];
       final av = after?[key];

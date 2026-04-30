@@ -1,5 +1,4 @@
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import 'domain_registration.dart';
 
@@ -130,7 +129,6 @@ abstract interface class SchemaDeployer {
 
 /// No-op [SchemaDeployer] for in-memory storage and tests.
 /// Tables are created on demand by InMemoryVaultStorage.ensureCollection().
-@internal
 final class InMemorySchemaDeployer implements SchemaDeployer {
   final _applied = <AppliedMigration>[];
   final _versions = <String, String>{}; // collection → version

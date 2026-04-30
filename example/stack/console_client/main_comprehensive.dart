@@ -8,7 +8,7 @@ void main() async {
   print('📋 Pre-flight Checks');
   print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  final serverUrl = 'http://localhost:8765';
+  final serverUrl = Platform.environment['VAULT_ENDPOINT'] ?? 'http://localhost:8765';
   print('🔍 Checking server at $serverUrl...');
   final serverReachable = await _checkServer(serverUrl);
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:aq_schema/aq_schema.dart';
 
@@ -9,6 +10,7 @@ import '../storage/postgres/postgres_schema_deployer.dart';
 import '../storage/postgres/postgres_versioned_repository.dart';
 import 'domain_registration.dart';
 import 'schema_deployer.dart';
+import 'vault_command_dispatcher.dart';
 
 /// Central registry for domain collections in a dart_vault Data Service.
 ///
@@ -80,7 +82,7 @@ final class VaultRegistry {
   /// Полезно для диагностики и мониторинга.
   Future<List<Map<String, dynamic>>> getDbRegistry() async {
     if (_deployer is! PostgresSchemaDeployer) return [];
-    return (_deployer as PostgresSchemaDeployer).getRegistryEntries();
+    return _deployer.getRegistryEntries();
   }
 
   // ── Handshake manifest ────────────────────────────────────────────────────
@@ -105,6 +107,18 @@ final class VaultRegistry {
     required Map<String, dynamic> args,
     required String tenantId,
   }) async {
+    // ── Валидация входных данных ──────────────────────────────────────────
+    if (tenantId.trim().isEmpty) {
+      throw VaultStorageException('tenantId cannot be empty');
+    }
+    if (collection.trim().isEmpty) {
+      throw VaultStorageException('collection cannot be empty');
+    }
+    if (operation.trim().isEmpty) {
+      throw VaultStorageException('operation cannot be empty');
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     // Обработка _log коллекций для LoggedStorable
     if (collection.endsWith('_log')) {
       final baseCollection = collection.substring(0, collection.length - 4);
@@ -133,6 +147,16 @@ final class VaultRegistry {
 
     final reg = _domains[collection];
     if (reg == null) {
+      // Внутренние коллекции data layer: {base}_deleted, {base}__meta, {base}__nodes
+      // Создаются автоматически репозиториями — проксируем напрямую в storage.
+      if (_isInternalCollection(collection)) {
+        final storage = _storageFactory(tenantId);
+        try {
+          return await _dispatchRaw(storage, tenantId, collection, operation, args);
+        } finally {
+          await storage.dispose();
+        }
+      }
       throw VaultNotFoundException(
           'Collection "$collection" is not registered in this Data Service.');
     }
@@ -247,7 +271,6 @@ final class VaultRegistry {
     String operation,
     Map<String, dynamic> args,
   ) async {
-    // Use PostgresVersionedRepository for PostgreSQL storage
     final repo = storage is PostgresVaultStorage
         ? PostgresVersionedRepository(
             pool: storage.pool,
@@ -260,155 +283,123 @@ final class VaultRegistry {
             fromMap: (m) => reg.fromMap(m) as VersionedStorable,
           );
 
-    switch (operation) {
-      case 'put': // createEntity
-        final model = reg.fromMap(args['data'] as Map<String, dynamic>)
-            as VersionedStorable;
-        final node = await repo.createEntity(model);
-        return node.toMap();
+    final dispatcher = VaultCommandDispatcher();
 
-      case 'updateDraft':
-        final model = reg.fromMap(args['data'] as Map<String, dynamic>)
-            as VersionedStorable;
-        await repo.updateDraft(args['nodeId'] as String, model);
-        return null;
-
-      case 'publishDraft':
-        final increment = IncrementType.values.firstWhere(
-          (i) => i.name == (args['increment'] as String? ?? 'patch'),
-        );
-        final node = await repo.publishDraft(
-          args['nodeId'] as String,
-          increment: increment,
-        );
-        return node.toMap();
-
-      case 'snapshotVersion':
-        final node = await repo.snapshotVersion(args['nodeId'] as String);
-        return node.toMap();
-
-      case 'deleteVersion':
-        await repo.deleteVersion(args['nodeId'] as String);
-        return null;
-
-      case 'delete':
-        await repo.deleteEntity(args['id'] as String);
-        return null;
-
-      case 'getCurrent':
-        final entity = await repo.getCurrent(args['entityId'] as String);
-        return entity?.toMap();
-
-      case 'getVersion':
-        final entity = await repo.getVersion(args['nodeId'] as String);
-        return entity?.toMap();
-
-      case 'getVersionNode':
-        // Получить VersionNode по nodeId
-        // Для PostgresVersionedRepository используем getNodeById
-        if (storage is PostgresVaultStorage && repo is PostgresVersionedRepository) {
-          final node = await (repo as PostgresVersionedRepository).getNodeById(args['nodeId'] as String);
-          return node?.toMap();
-        } else {
-          // Для других реализаций нужен entityId
-          final entityId = args['entityId'] as String?;
-          if (entityId == null || entityId.isEmpty) {
-            throw VaultStorageException('entityId required for non-PostgreSQL storage');
-          }
-          final nodes = await repo.listVersions(entityId);
-          final nodeId = args['nodeId'] as String;
-          final node = nodes.cast<VersionNode?>().firstWhere(
-            (n) => n?.nodeId == nodeId,
-            orElse: () => null,
-          );
-          return node?.toMap();
-        }
-
-      case 'get': // alias for getCurrent
-        final entity = await repo.getCurrent(args['id'] as String);
-        return entity?.toMap();
-
-      case 'listVersions':
-        final nodes = await repo.listVersions(args['entityId'] as String);
-        return nodes.map((n) => n.toMap()).toList();
-
-      case 'query':
-        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
-        final nodes = await repo.findNodes(query: q);
-        return nodes.map((n) => n.toMap()).toList();
-
-      case 'queryPage':
-        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?) ??
-            const VaultQuery();
-        final page = await repo.findNodesPage(q);
-        return {
-          'items': page.items.map((n) => n.toMap()).toList(),
-          'total': page.total,
-          'offset': page.offset,
-          'limit': page.limit,
-        };
-
-      case 'count':
-        final nodes = await repo.findNodes();
-        return nodes.length;
-
-      case 'grantAccess':
-        await repo.grantAccess(
-          args['entityId'] as String,
+    dispatcher.register('put', (args) async {
+      final model = reg.fromMap(args['data'] as Map<String, dynamic>) as VersionedStorable;
+      return (await repo.createEntity(model)).toMap();
+    });
+    dispatcher.register('createDraftFrom', (args) async {
+      final model = reg.fromMap(args['data'] as Map<String, dynamic>) as VersionedStorable;
+      return (await repo.createDraftFrom(args['parentNodeId'] as String, model)).toMap();
+    });
+    dispatcher.register('updateDraft', (args) async {
+      final model = reg.fromMap(args['data'] as Map<String, dynamic>) as VersionedStorable;
+      await repo.updateDraft(args['nodeId'] as String, model);
+      return null;
+    });
+    dispatcher.register('publishDraft', (args) async {
+      final increment = IncrementType.values.firstWhere(
+        (i) => i.name == (args['increment'] as String? ?? 'patch'),
+      );
+      return (await repo.publishDraft(args['nodeId'] as String, increment: increment)).toMap();
+    });
+    dispatcher.register('snapshotVersion', (args) async {
+      return (await repo.snapshotVersion(args['nodeId'] as String)).toMap();
+    });
+    dispatcher.register('deleteVersion', (args) async {
+      await repo.deleteVersion(args['nodeId'] as String);
+      return null;
+    });
+    dispatcher.register('delete', (args) async {
+      await repo.deleteEntity(args['id'] as String);
+      return null;
+    });
+    dispatcher.register('getCurrent', (args) async {
+      return (await repo.getCurrent(args['entityId'] as String))?.toMap();
+    });
+    dispatcher.register('get', (args) async {
+      return (await repo.getCurrent(args['id'] as String))?.toMap();
+    });
+    dispatcher.register('getVersion', (args) async {
+      return (await repo.getVersion(args['nodeId'] as String))?.toMap();
+    });
+    dispatcher.register('getVersionNode', (args) async {
+      if (storage is PostgresVaultStorage && repo is PostgresVersionedRepository) {
+        return (await repo.getNodeById(args['nodeId'] as String))?.toMap();
+      }
+      final nodes = await repo.listVersions(args['entityId'] as String? ?? '');
+      return nodes.cast<VersionNode?>()
+          .firstWhere((n) => n?.nodeId == args['nodeId'], orElse: () => null)
+          ?.toMap();
+    });
+    dispatcher.register('listVersions', (args) async {
+      final nodes = await repo.listVersions(args['entityId'] as String);
+      return nodes.map((n) => n.toMap()).toList();
+    });
+    dispatcher.register('listBranches', (args) async {
+      return await repo.listBranches(args['entityId'] as String);
+    });
+    dispatcher.register('createBranch', (args) async {
+      final raw = args['data'];
+      final dataMap = raw is String ? jsonDecode(raw) as Map<String, dynamic> : raw as Map<String, dynamic>;
+      final model = reg.fromMap(dataMap) as VersionedStorable;
+      return (await repo.createBranch(
+        args['parentNodeId'] as String,
+        branchName: args['branchName'] as String,
+        model: model,
+      )).toMap();
+    });
+    dispatcher.register('mergeToMain', (args) async {
+      return (await repo.mergeToMain(
+        args['entityId'] as String,
+        sourceBranch: args['sourceBranch'] as String,
+        requesterId: args['requesterId'] as String,
+        fromMap: (m) => reg.fromMap(m) as VersionedStorable,
+      )).toMap();
+    });
+    dispatcher.register('setCurrentVersion', (args) async {
+      await repo.setCurrentVersion(
+        args['entityId'] as String,
+        args['nodeId'] as String,
+        requesterId: args['requesterId'] as String? ?? 'rpc',
+      );
+      return null;
+    });
+    dispatcher.register('query', (args) async {
+      final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
+      return (await repo.findNodes(query: q)).map((n) => n.toMap()).toList();
+    });
+    dispatcher.register('queryPage', (args) async {
+      final q = _deserializeQuery(args['query'] as Map<String, dynamic>?) ?? const VaultQuery();
+      final page = await repo.findNodesPage(q);
+      return {'items': page.items.map((n) => n.toMap()).toList(), 'total': page.total, 'offset': page.offset, 'limit': page.limit};
+    });
+    dispatcher.register('count', (args) async {
+      return (await repo.findNodes()).length;
+    });
+    dispatcher.register('grantAccess', (args) async {
+      await repo.grantAccess(args['entityId'] as String,
           actorId: args['actorId'] as String,
-          level: AccessLevel.values.firstWhere(
-            (l) => l.name == (args['level'] as String? ?? 'read'),
-          ),
-          requesterId: args['requesterId'] as String,
-        );
-        return null;
-
-      case 'revokeAccess':
-        await repo.revokeAccess(
-          args['entityId'] as String,
+          level: AccessLevel.values.firstWhere((l) => l.name == (args['level'] as String? ?? 'read')),
+          requesterId: args['requesterId'] as String);
+      return null;
+    });
+    dispatcher.register('revokeAccess', (args) async {
+      await repo.revokeAccess(args['entityId'] as String,
           actorId: args['actorId'] as String,
-          requesterId: args['requesterId'] as String,
-        );
-        return null;
-
-      case 'hasAccess':
-        return await repo.hasAccess(
-          args['entityId'] as String,
+          requesterId: args['requesterId'] as String);
+      return null;
+    });
+    dispatcher.register('hasAccess', (args) async {
+      return await repo.hasAccess(args['entityId'] as String,
           actorId: args['actorId'] as String,
-          minimumLevel: AccessLevel.values.firstWhere(
-            (l) => l.name == (args['level'] as String? ?? 'read'),
-          ),
-        );
+          minimumLevel: AccessLevel.values.firstWhere((l) => l.name == (args['level'] as String? ?? 'read')));
+    });
+    dispatcher.register('createIndex', (_) async => null);
+    dispatcher.register('clear', (_) async => null);
 
-      case 'createBranch':
-        final model = reg.fromMap(args['data'] as Map<String, dynamic>)
-            as VersionedStorable;
-        final node = await repo.createBranch(
-          args['parentNodeId'] as String,
-          branchName: args['branchName'] as String,
-          model: model,
-        );
-        return node.toMap();
-
-      case 'mergeToMain':
-        final node = await repo.mergeToMain(
-          args['entityId'] as String,
-          sourceBranch: args['sourceBranch'] as String,
-          requesterId: args['requesterId'] as String,
-          fromMap: (m) => reg.fromMap(m) as VersionedStorable,
-        );
-        return node.toMap();
-
-      case 'listBranches':
-        return await repo.listBranches(args['entityId'] as String);
-
-      case 'createIndex':
-      case 'clear':
-        return null;
-
-      default:
-        throw VaultStorageException('Unknown versioned operation: $operation');
-    }
+    return dispatcher.dispatch(operation, args);
   }
 
   // ── Logged dispatch ───────────────────────────────────────────────────────
@@ -425,77 +416,54 @@ final class VaultRegistry {
       captureFullSnapshot: args['captureFullSnapshot'] as bool? ?? false,
     );
 
-    switch (operation) {
-      case 'put': // save
-        final entity =
-            reg.fromMap(args['data'] as Map<String, dynamic>) as LoggedStorable;
-        await repo.save(entity, actorId: args['actorId'] as String? ?? 'rpc');
-        return null;
+    final dispatcher = VaultCommandDispatcher();
 
-      case 'delete':
-        await repo.delete(
-          args['id'] as String,
-          actorId: args['actorId'] as String? ?? 'rpc',
-        );
-        return null;
+    dispatcher.register('put', (args) async {
+      final entity = reg.fromMap(args['data'] as Map<String, dynamic>) as LoggedStorable;
+      await repo.save(entity, actorId: args['actorId'] as String? ?? 'rpc');
+      return null;
+    });
+    dispatcher.register('delete', (args) async {
+      await repo.delete(args['id'] as String, actorId: args['actorId'] as String? ?? 'rpc');
+      return null;
+    });
+    dispatcher.register('restore', (args) async {
+      await repo.restore(args['id'] as String, actorId: args['actorId'] as String? ?? 'rpc');
+      return null;
+    });
+    dispatcher.register('get', (args) async {
+      return (await repo.findById(args['id'] as String))?.toMap();
+    });
+    dispatcher.register('query', (args) async {
+      final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
+      return (await repo.findAll(query: q)).map((e) => e.toMap()).toList();
+    });
+    dispatcher.register('queryIncludingDeleted', (args) async {
+      final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
+      return (await repo.findAllIncludingDeleted(query: q)).map((e) => e.toMap()).toList();
+    });
+    dispatcher.register('queryPage', (args) async {
+      final q = _deserializeQuery(args['query'] as Map<String, dynamic>?) ?? const VaultQuery();
+      final page = await repo.findPage(q);
+      return {'items': page.items.map((e) => e.toMap()).toList(), 'total': page.total, 'offset': page.offset, 'limit': page.limit};
+    });
+    dispatcher.register('count', (_) async => await repo.count());
+    dispatcher.register('exists', (args) async => await repo.exists(args['id'] as String));
+    dispatcher.register('getHistory', (args) async {
+      return (await repo.getHistory(args['entityId'] as String)).map((e) => e.toMap()).toList();
+    });
+    dispatcher.register('rollbackTo', (args) async {
+      await repo.rollbackTo(
+        args['entityId'] as String,
+        args['entryId'] as String,
+        actorId: args['actorId'] as String? ?? 'rpc',
+      );
+      return null;
+    });
+    dispatcher.register('createIndex', (_) async => null);
+    dispatcher.register('clear', (_) async => null);
 
-      case 'restore':
-        await repo.restore(
-          args['id'] as String,
-          actorId: args['actorId'] as String? ?? 'rpc',
-        );
-        return null;
-
-      case 'get':
-        final e = await repo.findById(args['id'] as String);
-        return e?.toMap();
-
-      case 'query':
-        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
-        final items = await repo.findAll(query: q);
-        return items.map((e) => e.toMap()).toList();
-
-      case 'queryIncludingDeleted':
-        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
-        final items = await repo.findAllIncludingDeleted(query: q);
-        return items.map((e) => e.toMap()).toList();
-
-      case 'queryPage':
-        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?) ??
-            const VaultQuery();
-        final page = await repo.findPage(q);
-        return {
-          'items': page.items.map((e) => e.toMap()).toList(),
-          'total': page.total,
-          'offset': page.offset,
-          'limit': page.limit,
-        };
-
-      case 'count':
-        return await repo.count();
-
-      case 'exists':
-        return await repo.exists(args['id'] as String);
-
-      case 'getHistory':
-        final hist = await repo.getHistory(args['entityId'] as String);
-        return hist.map((e) => e.toMap()).toList();
-
-      case 'rollbackTo':
-        await repo.rollbackTo(
-          args['entityId'] as String,
-          args['entryId'] as String,
-          actorId: args['actorId'] as String? ?? 'rpc',
-        );
-        return null;
-
-      case 'createIndex':
-      case 'clear':
-        return null;
-
-      default:
-        throw VaultStorageException('Unknown logged operation: $operation');
-    }
+    return dispatcher.dispatch(operation, args);
   }
 
   // ── Log query dispatch ────────────────────────────────────────────────────
@@ -566,5 +534,48 @@ final class VaultRegistry {
     if (limit != null) q = q.page(limit: limit, offset: offset ?? 0);
 
     return q;
+  }
+
+  // ── Internal collection helpers ───────────────────────────────────────────
+
+  /// Внутренние коллекции создаются репозиториями автоматически.
+  /// Суффиксы: _deleted (soft delete log), __meta (versioned), __nodes (versioned), _log (logged).
+  bool _isInternalCollection(String collection) =>
+      collection.endsWith('_deleted') ||
+      collection.endsWith('__meta') ||
+      collection.endsWith('__nodes');
+
+  /// Прямой dispatch в storage для внутренних коллекций.
+  Future<dynamic> _dispatchRaw(
+    VaultStorage storage,
+    String tenantId,
+    String collection,
+    String operation,
+    Map<String, dynamic> args,
+  ) async {
+    await storage.ensureCollection(collection);
+    switch (operation) {
+      case 'put':
+        final data = args['data'] as Map<String, dynamic>;
+        final id = args['id'] as String? ?? data['id'] as String;
+        await storage.put(collection, id, data);
+        return null;
+      case 'get':
+        return storage.get(collection, args['id'] as String);
+      case 'delete':
+        await storage.delete(collection, args['id'] as String);
+        return null;
+      case 'exists':
+        return storage.exists(collection, args['id'] as String);
+      case 'query':
+        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
+        final items = await storage.query(collection, q ?? const VaultQuery());
+        return items;
+      case 'count':
+        final q = _deserializeQuery(args['query'] as Map<String, dynamic>?);
+        return storage.count(collection, q ?? const VaultQuery());
+      default:
+        throw VaultStorageException('Operation "$operation" not supported for internal collections');
+    }
   }
 }

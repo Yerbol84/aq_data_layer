@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../exceptions/vault_exceptions.dart';
 
@@ -35,7 +34,6 @@ Stream<List<T>> watchWithBuffer<T>(
 }
 
 /// Default implementation of [DirectRepository] backed by [VaultStorage].
-@internal
 final class DirectRepositoryImpl<T extends DirectStorable>
     implements DirectRepository<T> {
   final VaultStorage _storage;

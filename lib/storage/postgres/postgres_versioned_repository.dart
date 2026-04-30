@@ -1,9 +1,8 @@
 import 'package:postgres/postgres.dart';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../../exceptions/vault_exceptions.dart';
-import '../versioned_storage_contract.dart';
+import '../../deploy/versioned_storage_schema.dart';
 
 /// PostgreSQL-optimized implementation of [VersionedRepository].
 ///
@@ -11,12 +10,10 @@ import '../versioned_storage_contract.dart';
 /// - `{collection}_versions` — all version nodes
 /// - `{collection}_current` — current version pointer per entity
 ///
-/// All field names use constants from [VersionedStorageContract].
-@internal
+/// All field names use constants from [VersionedStorageSchema].
 final class PostgresVersionedRepository<T extends VersionedStorable>
     implements VersionedRepository<T> {
-  final Pool _pool;
-  final String _collection;
+  final Pool<Object?> _pool;
   final String _tenantId;
   final T Function(Map<String, dynamic>) _fromMap;
 
@@ -24,20 +21,20 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
   late final String _currentTable;
 
   PostgresVersionedRepository({
-    required Pool pool,
+    required Pool<Object?> pool,
     required String collection,
     required String tenantId,
     required T Function(Map<String, dynamic>) fromMap,
   })  : _pool = pool,
-        _collection = collection,
         _tenantId = tenantId,
         _fromMap = fromMap {
-    _versionsTable = VersionedStorageContract.versionsTable(collection);
-    _currentTable = VersionedStorageContract.currentTable(collection);
+    final tableNames = VersionedStorageSchema(collection).tableNames;
+    _versionsTable = tableNames.versions!;
+    _currentTable = tableNames.current!;
   }
 
   /// Доступ к пулу соединений.
-  Pool get pool => _pool;
+  Pool<Object?> get pool => _pool;
 
   /// Устанавливает tenant-контекст для текущей сессии.
   /// RLS политики используют current_setting('app.current_tenant').
@@ -86,15 +83,15 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         INSERT INTO $_versionsTable (
-          ${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kEntityId},
-          ${VersionedStorageContract.kTenantId},
-          ${VersionedStorageContract.kStatus},
-          ${VersionedStorageContract.kBranch},
-          ${VersionedStorageContract.kSequenceNumber},
-          ${VersionedStorageContract.kCreatedBy},
-          ${VersionedStorageContract.kCreatedAt},
-          ${VersionedStorageContract.kData}
+          ${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kEntityId},
+          ${VersionedStorageSchema.kTenantId},
+          ${VersionedStorageSchema.kStatus},
+          ${VersionedStorageSchema.kBranch},
+          ${VersionedStorageSchema.kSequenceNumber},
+          ${VersionedStorageSchema.kCreatedBy},
+          ${VersionedStorageSchema.kCreatedAt},
+          ${VersionedStorageSchema.kData}
         ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9)
         ''',
         parameters: [
@@ -144,16 +141,16 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         INSERT INTO $_versionsTable (
-          ${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kEntityId},
-          ${VersionedStorageContract.kParentNodeId},
-          ${VersionedStorageContract.kTenantId},
-          ${VersionedStorageContract.kStatus},
-          ${VersionedStorageContract.kBranch},
-          ${VersionedStorageContract.kSequenceNumber},
-          ${VersionedStorageContract.kCreatedBy},
-          ${VersionedStorageContract.kCreatedAt},
-          ${VersionedStorageContract.kData}
+          ${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kEntityId},
+          ${VersionedStorageSchema.kParentNodeId},
+          ${VersionedStorageSchema.kTenantId},
+          ${VersionedStorageSchema.kStatus},
+          ${VersionedStorageSchema.kBranch},
+          ${VersionedStorageSchema.kSequenceNumber},
+          ${VersionedStorageSchema.kCreatedBy},
+          ${VersionedStorageSchema.kCreatedAt},
+          ${VersionedStorageSchema.kData}
         ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
         ''',
         parameters: [
@@ -180,10 +177,10 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         UPDATE $_versionsTable
-        SET ${VersionedStorageContract.kData} = \$1
-        WHERE ${VersionedStorageContract.kNodeId} = \$2
-          AND ${VersionedStorageContract.kTenantId} = \$3
-          AND ${VersionedStorageContract.kStatus} = \$4
+        SET ${VersionedStorageSchema.kData} = \$1
+        WHERE ${VersionedStorageSchema.kNodeId} = \$2
+          AND ${VersionedStorageSchema.kTenantId} = \$3
+          AND ${VersionedStorageSchema.kStatus} = \$4
         ''',
         parameters: [
           model.toMap(),
@@ -230,10 +227,10 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         UPDATE $_versionsTable
-        SET ${VersionedStorageContract.kStatus} = \$1,
-            ${VersionedStorageContract.kVersion} = \$2
-        WHERE ${VersionedStorageContract.kNodeId} = \$3
-          AND ${VersionedStorageContract.kTenantId} = \$4
+        SET ${VersionedStorageSchema.kStatus} = \$1,
+            ${VersionedStorageSchema.kVersion} = \$2
+        WHERE ${VersionedStorageSchema.kNodeId} = \$3
+          AND ${VersionedStorageSchema.kTenantId} = \$4
         ''',
         parameters: [
           VersionStatus.published.name,
@@ -267,9 +264,9 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         UPDATE $_versionsTable
-        SET ${VersionedStorageContract.kStatus} = \$1
-        WHERE ${VersionedStorageContract.kNodeId} = \$2
-          AND ${VersionedStorageContract.kTenantId} = \$3
+        SET ${VersionedStorageSchema.kStatus} = \$1
+        WHERE ${VersionedStorageSchema.kNodeId} = \$2
+          AND ${VersionedStorageSchema.kTenantId} = \$3
         ''',
         parameters: [VersionStatus.snapshot.name, nodeId, _tenantId],
       );
@@ -284,8 +281,8 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         DELETE FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kNodeId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
+        WHERE ${VersionedStorageSchema.kNodeId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [nodeId, _tenantId],
       );
@@ -299,8 +296,8 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         DELETE FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [entityId, _tenantId],
       );
@@ -309,8 +306,8 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         DELETE FROM $_currentTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [entityId, _tenantId],
       );
@@ -354,16 +351,16 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         INSERT INTO $_versionsTable (
-          ${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kEntityId},
-          ${VersionedStorageContract.kParentNodeId},
-          ${VersionedStorageContract.kTenantId},
-          ${VersionedStorageContract.kStatus},
-          ${VersionedStorageContract.kBranch},
-          ${VersionedStorageContract.kSequenceNumber},
-          ${VersionedStorageContract.kCreatedBy},
-          ${VersionedStorageContract.kCreatedAt},
-          ${VersionedStorageContract.kData}
+          ${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kEntityId},
+          ${VersionedStorageSchema.kParentNodeId},
+          ${VersionedStorageSchema.kTenantId},
+          ${VersionedStorageSchema.kStatus},
+          ${VersionedStorageSchema.kBranch},
+          ${VersionedStorageSchema.kSequenceNumber},
+          ${VersionedStorageSchema.kCreatedBy},
+          ${VersionedStorageSchema.kCreatedAt},
+          ${VersionedStorageSchema.kData}
         ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
         ''',
         parameters: [
@@ -398,10 +395,10 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       final result = await connection.execute(
         '''
         SELECT * FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
-          AND ${VersionedStorageContract.kBranch} = \$3
-        ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
+          AND ${VersionedStorageSchema.kBranch} = \$3
+        ORDER BY ${VersionedStorageSchema.kSequenceNumber} DESC
         LIMIT 1
         ''',
         parameters: [entityId, _tenantId, sourceBranch],
@@ -412,8 +409,6 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       }
 
       final sourceNode = _rowToVersionNode(result.first);
-      final model = fromMap(sourceNode.data);
-
       // Create new draft on main branch
       final nodeId = _uuid();
       final now = DateTime.now();
@@ -421,16 +416,16 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         INSERT INTO $_versionsTable (
-          ${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kEntityId},
-          ${VersionedStorageContract.kParentNodeId},
-          ${VersionedStorageContract.kTenantId},
-          ${VersionedStorageContract.kStatus},
-          ${VersionedStorageContract.kBranch},
-          ${VersionedStorageContract.kSequenceNumber},
-          ${VersionedStorageContract.kCreatedBy},
-          ${VersionedStorageContract.kCreatedAt},
-          ${VersionedStorageContract.kData}
+          ${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kEntityId},
+          ${VersionedStorageSchema.kParentNodeId},
+          ${VersionedStorageSchema.kTenantId},
+          ${VersionedStorageSchema.kStatus},
+          ${VersionedStorageSchema.kBranch},
+          ${VersionedStorageSchema.kSequenceNumber},
+          ${VersionedStorageSchema.kCreatedBy},
+          ${VersionedStorageSchema.kCreatedAt},
+          ${VersionedStorageSchema.kData}
         ) VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9, \$10)
         ''',
         parameters: [
@@ -469,10 +464,10 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
 
       final result = await connection.execute(
         '''
-        SELECT DISTINCT ${VersionedStorageContract.kBranch}
+        SELECT DISTINCT ${VersionedStorageSchema.kBranch}
         FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [entityId, _tenantId],
       );
@@ -503,9 +498,9 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
         '''
         SELECT v.* FROM $_versionsTable v
         INNER JOIN $_currentTable c
-          ON v.${VersionedStorageContract.kNodeId} = c.${VersionedStorageContract.kNodeId}
-        WHERE c.${VersionedStorageContract.kEntityId} = \$1
-          AND c.${VersionedStorageContract.kTenantId} = \$2
+          ON v.${VersionedStorageSchema.kNodeId} = c.${VersionedStorageSchema.kNodeId}
+        WHERE c.${VersionedStorageSchema.kEntityId} = \$1
+          AND c.${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [entityId, _tenantId],
       );
@@ -577,20 +572,20 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await _setTenantContext(connection);
 
       final conditions = <String>[
-        '${VersionedStorageContract.kEntityId} = \$1',
-        '${VersionedStorageContract.kTenantId} = \$2',
+        '${VersionedStorageSchema.kEntityId} = \$1',
+        '${VersionedStorageSchema.kTenantId} = \$2',
       ];
       final params = <dynamic>[entityId, _tenantId];
 
       if (status != null) {
         conditions.add(
-            '${VersionedStorageContract.kStatus} = \$${params.length + 1}');
+            '${VersionedStorageSchema.kStatus} = \$${params.length + 1}');
         params.add(status.name);
       }
 
       if (branch != null) {
         conditions.add(
-            '${VersionedStorageContract.kBranch} = \$${params.length + 1}');
+            '${VersionedStorageSchema.kBranch} = \$${params.length + 1}');
         params.add(branch);
       }
 
@@ -598,7 +593,7 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
         '''
         SELECT * FROM $_versionsTable
         WHERE ${conditions.join(' AND ')}
-        ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+        ORDER BY ${VersionedStorageSchema.kSequenceNumber} DESC
         ''',
         parameters: params,
       );
@@ -616,8 +611,8 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       final result = await connection.execute(
         '''
         SELECT * FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kTenantId} = \$1
-        ORDER BY ${VersionedStorageContract.kCreatedAt} DESC
+        WHERE ${VersionedStorageSchema.kTenantId} = \$1
+        ORDER BY ${VersionedStorageSchema.kCreatedAt} DESC
         ''',
         parameters: [_tenantId],
       );
@@ -645,10 +640,10 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       final result = await connection.execute(
         '''
         SELECT * FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
-          AND ${VersionedStorageContract.kStatus} = \$3
-        ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
+          AND ${VersionedStorageSchema.kStatus} = \$3
+        ORDER BY ${VersionedStorageSchema.kSequenceNumber} DESC
         LIMIT 1
         ''',
         parameters: [entityId, _tenantId, VersionStatus.published.name],
@@ -691,8 +686,8 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       final result = await connection.execute(
         '''
         SELECT * FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kNodeId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
+        WHERE ${VersionedStorageSchema.kNodeId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
         ''',
         parameters: [nodeId, _tenantId],
       );
@@ -707,15 +702,15 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
       await connection.execute(
         '''
         INSERT INTO $_currentTable (
-          ${VersionedStorageContract.kEntityId},
-          ${VersionedStorageContract.kTenantId},
-          ${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kUpdatedAt}
+          ${VersionedStorageSchema.kEntityId},
+          ${VersionedStorageSchema.kTenantId},
+          ${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kUpdatedAt}
         ) VALUES (\$1, \$2, \$3, NOW())
-        ON CONFLICT (${VersionedStorageContract.kEntityId}, ${VersionedStorageContract.kTenantId})
+        ON CONFLICT (${VersionedStorageSchema.kEntityId}, ${VersionedStorageSchema.kTenantId})
         DO UPDATE SET
-          ${VersionedStorageContract.kNodeId} = EXCLUDED.${VersionedStorageContract.kNodeId},
-          ${VersionedStorageContract.kUpdatedAt} = NOW()
+          ${VersionedStorageSchema.kNodeId} = EXCLUDED.${VersionedStorageSchema.kNodeId},
+          ${VersionedStorageSchema.kUpdatedAt} = NOW()
         ''',
         parameters: [entityId, _tenantId, nodeId],
       );
@@ -728,12 +723,12 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
 
       final result = await connection.execute(
         '''
-        SELECT ${VersionedStorageContract.kVersion}
+        SELECT ${VersionedStorageSchema.kVersion}
         FROM $_versionsTable
-        WHERE ${VersionedStorageContract.kEntityId} = \$1
-          AND ${VersionedStorageContract.kTenantId} = \$2
-          AND ${VersionedStorageContract.kVersion} IS NOT NULL
-        ORDER BY ${VersionedStorageContract.kSequenceNumber} DESC
+        WHERE ${VersionedStorageSchema.kEntityId} = \$1
+          AND ${VersionedStorageSchema.kTenantId} = \$2
+          AND ${VersionedStorageSchema.kVersion} IS NOT NULL
+        ORDER BY ${VersionedStorageSchema.kSequenceNumber} DESC
         LIMIT 1
         ''',
         parameters: [entityId, _tenantId],
@@ -748,20 +743,20 @@ final class PostgresVersionedRepository<T extends VersionedStorable>
   VersionNode _rowToVersionNode(ResultRow row) {
     final cols = row.toColumnMap();
     return VersionNode(
-      nodeId: cols[VersionedStorageContract.kNodeId] as String,
-      entityId: cols[VersionedStorageContract.kEntityId] as String,
-      parentNodeId: cols[VersionedStorageContract.kParentNodeId] as String?,
+      nodeId: cols[VersionedStorageSchema.kNodeId] as String,
+      entityId: cols[VersionedStorageSchema.kEntityId] as String,
+      parentNodeId: cols[VersionedStorageSchema.kParentNodeId] as String?,
       status: VersionStatus.fromString(
-          cols[VersionedStorageContract.kStatus] as String),
-      version: cols[VersionedStorageContract.kVersion] != null
-          ? Semver.parse(cols[VersionedStorageContract.kVersion] as String)
+          cols[VersionedStorageSchema.kStatus] as String),
+      version: cols[VersionedStorageSchema.kVersion] != null
+          ? Semver.parse(cols[VersionedStorageSchema.kVersion] as String)
           : null,
-      sequenceNumber: cols[VersionedStorageContract.kSequenceNumber] as int,
-      createdBy: cols[VersionedStorageContract.kCreatedBy] as String,
-      createdAt: cols[VersionedStorageContract.kCreatedAt] as DateTime,
-      data: cols[VersionedStorageContract.kData] as Map<String, dynamic>,
+      sequenceNumber: cols[VersionedStorageSchema.kSequenceNumber] as int,
+      createdBy: cols[VersionedStorageSchema.kCreatedBy] as String,
+      createdAt: cols[VersionedStorageSchema.kCreatedAt] as DateTime,
+      data: cols[VersionedStorageSchema.kData] as Map<String, dynamic>,
       isCurrent: false, // Will be set by getCurrent if needed
-      branch: cols[VersionedStorageContract.kBranch] as String,
+      branch: cols[VersionedStorageSchema.kBranch] as String,
     );
   }
 

@@ -1,10 +1,8 @@
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../repositories/vector_repository.dart';
 
 /// Default implementation of [VectorRepository] backed by [VectorStorage].
-@internal
 final class VectorRepositoryImpl implements VectorRepository {
   final VectorStorage _storage;
   final String _collection;

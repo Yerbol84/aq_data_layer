@@ -1,5 +1,10 @@
 import 'package:aq_schema/aq_schema.dart';
 
+import 'direct_storage_schema.dart';
+import 'i_storage_schema.dart';
+import 'logged_storage_schema.dart';
+import 'versioned_storage_schema.dart';
+
 /// Storage mode — determines which repository type is used.
 enum StorageMode { direct, versioned, logged, artifact, vector }
 
@@ -83,6 +88,17 @@ final class DomainRegistration {
     this.schemaVersion = '1.0.0',
     this.dartClass,
   });
+
+  /// Схема хранения для этого домена.
+  ///
+  /// Единственный источник правды для структуры таблиц.
+  /// Создаётся автоматически из [mode] и [collection].
+  IStorageSchema get schema => switch (mode) {
+        StorageMode.direct => DirectStorageSchema(collection),
+        StorageMode.versioned => VersionedStorageSchema(collection),
+        StorageMode.logged => LoggedStorageSchema(collection),
+        _ => DirectStorageSchema(collection),
+      };
 
   Map<String, dynamic> toInfo() => {
         'name': collection,

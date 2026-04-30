@@ -18,6 +18,9 @@ class Item implements DirectStorable {
   Map<String, dynamic> toMap() => {'id': id, 'name': name, 'score': score};
 
   @override
+  bool get softDelete => false;
+
+  @override
   Map<String, dynamic> get indexFields => {'name': name};
 
   @override
@@ -76,6 +79,9 @@ class Doc implements VersionedStorable {
         'title': title,
         'body': body,
       };
+
+  @override
+  bool get softDelete => false;
 
   @override
   Map<String, dynamic> get indexFields => {'title': title};
@@ -145,6 +151,9 @@ class Task implements LoggedStorable {
         'status': status,
         'assigneeId': assigneeId,
       };
+
+  @override
+  bool get softDelete => false;
 
   @override
   Map<String, dynamic> get indexFields => {'status': status};
@@ -222,6 +231,9 @@ class FileEntry implements ArtifactEntry {
         'meta': meta,
         'createdAt': createdAt.toIso8601String(),
       };
+
+  @override
+  bool get softDelete => false;
 
   @override
   Map<String, dynamic> get indexFields => {'fileName': fileName};

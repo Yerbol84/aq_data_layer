@@ -125,17 +125,14 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
       String collection, String id, Map<String, dynamic> data) async {
     // Проверяем, есть ли специальная операция в data (для versioned storage)
     final operation = data['operation'] as String?;
-    print('🔍 RemoteVaultStorage.put: collection=$collection, id=$id, operation=$operation');
 
     if (operation != null && operation != 'put') {
       // Для специальных операций (publish, createBranch и т.д.)
       // удаляем 'operation' из data и используем его как имя операции
       final cleanData = Map<String, dynamic>.from(data)..remove('operation');
-      print('  → Calling RPC with operation=$operation');
       await _rpc(collection, operation, cleanData);
     } else {
       // Обычная операция put
-      print('  → Calling RPC with operation=put');
       await _rpc(collection, 'put', {'id': id, 'data': data});
     }
     _notify(collection);
@@ -266,6 +263,17 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
 
   // ── RPC ────────────────────────────────────────────────────────────────────
 
+  /// Отправить типизированную команду на сервер.
+  ///
+  /// Заменяет паттерн `put(col, id, {'operation': 'createBranch', ...})`.
+  /// Команда сама знает своё имя и структуру args.
+  Future<dynamic> sendCommand(String collection, IVaultCommand command) =>
+      rpc(collection, command.commandName, command.toArgs());
+
+  /// Отправить типизированный запрос на сервер.
+  Future<dynamic> sendQuery(String collection, IVaultQuery query) =>
+      rpc(collection, query.queryName, query.toArgs());
+
   /// Direct RPC call to the Data Service.
   /// Used by RemoteLoggedRepository and other specialized remote repositories.
   Future<dynamic> rpc(
@@ -281,7 +289,6 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
       tenantId: tenantId,
     );
     final url = _contract.buildUrl(endpoint, VaultApiContract.routeRpc);
-    print('🔍 RemoteVaultStorage.rpc: endpoint=$endpoint collection=$collection operation=$operation');
     final raw = await _httpPost(url, req.toMap());
 
     if (raw == null) {
@@ -329,8 +336,6 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
 
   Future<dynamic> _httpPost(String url, Map<String, dynamic> body) async {
     final bodyJson = jsonEncode(body);
-    print('📤 HTTP POST: $url');
-    print('   Request body: ${bodyJson.length > 200 ? bodyJson.substring(0, 200) + "..." : bodyJson}');
 
     try {
       final response = await http
@@ -346,11 +351,6 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
           .timeout(timeout);
 
       final raw = response.body;
-
-      print('📥 HTTP Response:');
-      print('   Status: ${response.statusCode}');
-      print('   Body length: ${raw.length} bytes');
-      print('   Body: ${raw.isEmpty ? "(empty)" : (raw.length > 200 ? raw.substring(0, 200) + "..." : raw)}');
 
       if (response.statusCode >= 400) {
         Map<String, dynamic> errMap = {};
@@ -370,9 +370,7 @@ final class RemoteVaultStorage implements VaultStorage, ProxyStorage {
       }
 
       try {
-        final decoded = jsonDecode(raw);
-        print('   Decoded type: ${decoded.runtimeType}');
-        return decoded;
+        return jsonDecode(raw);
       } catch (e) {
         throw VaultStorageException(
           'Failed to decode JSON response: $e. '

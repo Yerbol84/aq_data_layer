@@ -1,7 +1,7 @@
-// pkgs/dart_vault_package/lib/client/vault.dart
 import 'package:aq_schema/aq_schema.dart';
 
 import 'remote/remote_vault_storage.dart';
+import 'remote/remote_logged_repository.dart';
 import '../storage/in_memory_vault_storage.dart';
 import '../storage/local_buffer_vault_storage.dart';
 import '../storage/direct_repository_impl.dart';
@@ -151,6 +151,24 @@ final class Vault {
     bool captureFullSnapshot = false,
   }) {
     final col = _qualify(collection);
+
+    // Resolve the underlying remote storage if wrapped in a buffer
+    final base = storage is LocalBufferVaultStorage
+        ? (storage as LocalBufferVaultStorage).remote
+        : storage;
+
+    // Remote: thin client — no business logic, no knowledge of _log tables
+    if (base is RemoteVaultStorage) {
+      final repo = RemoteLoggedRepository<T>(
+        storage: base,
+        collection: col,
+        fromMap: fromMap,
+      );
+      _initIndexes((idx) => repo.registerIndex(idx), indexes);
+      return repo;
+    }
+
+    // Local (InMemory / PostgreSQL on server): full business logic
     final repo = LoggedRepositoryImpl<T>(
       storage: storage,
       collection: col,
@@ -190,15 +208,13 @@ final class Vault {
     );
     try {
       await remoteStorage.connect();
-    } catch (e, stack) {
-      if (failFast) {
-        // Серверные приложения должны падать при ошибке подключения
-        rethrow;
-      }
-      // ignore: avoid_print
-      print('[Vault] Cannot connect to $endpoint, falling back to in-memory');
-      print('[Vault] Error: $e');
-      print('[Vault] Stack trace: ${stack.toString().split('\n').take(5).join('\n')}');
+    } catch (e) {
+      if (failFast) rethrow;
+      assert(() {
+        // ignore: avoid_print
+        print('[Vault] Cannot connect to $endpoint, falling back to in-memory. Error: $e');
+        return true;
+      }());
       return Vault(
         storage: InMemoryVaultStorage(tenantId: tenantId),
         tenantId: tenantId,

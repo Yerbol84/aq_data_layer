@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 /// [ArtifactStorage] backed by the local filesystem (`dart:io`).
 ///
@@ -22,7 +21,6 @@ import 'package:meta/meta.dart';
 /// this interface, so swapping is a one-line change.
 ///
 /// **Requires `dart:io`** — not available on Flutter Web.
-@internal
 final class LocalArtifactStorage implements ArtifactStorage {
   final String basePath;
 

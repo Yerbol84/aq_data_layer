@@ -27,6 +27,9 @@ class TestEntity implements DirectStorable {
   String get collectionName => kCollection;
 
   @override
+  bool get softDelete => false;
+
+  @override
   Map<String, dynamic> get indexFields => {
         'name': name,
         'value': value,

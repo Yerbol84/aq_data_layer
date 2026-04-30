@@ -1,23 +1,10 @@
 /// Unified contract for all Versioned Storage implementations.
 ///
-/// Defines constants, naming conventions, and data structure mappings
-/// to ensure consistency between:
-/// - PostgresVersionedRepository (uses _versions + _current tables)
-/// - VersionedRepositoryImpl (uses __meta + __nodes collections)
-///
-/// ## Table/Collection Naming
-///
-/// **PostgreSQL:**
-/// - `{collection}_versions` — all version nodes
-/// - `{collection}_current` — current version pointer per entity
-///
-/// **InMemory/IndexedDB:**
-/// - `{collection}__nodes` — all version nodes
-/// - `{collection}__meta` — entity metadata (owner, grants, current pointer)
-///
-/// ## Field Names
-///
-/// All implementations must use these exact field names in storage.
+/// @Deprecated Используйте [VersionedStorageSchema] из `lib/deploy/versioned_storage_schema.dart`.
+/// Все константы полей и имена таблиц перенесены туда.
+/// Этот класс будет удалён в следующей версии.
+@Deprecated('Use VersionedStorageSchema instead. '
+    'All field constants and table names have been moved to VersionedStorageSchema.')
 abstract final class VersionedStorageContract {
   // ── Table/Collection Names ─────────────────────────────────────────────────
 

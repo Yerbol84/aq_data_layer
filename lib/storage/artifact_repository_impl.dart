@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../repositories/artifact_repository.dart';
 
@@ -19,7 +18,6 @@ import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 /// Encryption is NOT the responsibility of this package.
 /// Encrypt the bytes before calling [save] and decrypt after [loadBytes].
 /// The repository stores and returns whatever bytes it receives.
-@internal
 final class ArtifactRepositoryImpl<T extends ArtifactEntry>
     implements ArtifactRepository<T> {
   final ArtifactStorage _binaryStore;

@@ -8,7 +8,7 @@ void main() async {
   print('📋 Pre-flight Checks');
   print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-  final serverUrl = 'http://localhost:8765';
+  final serverUrl = Platform.environment['VAULT_ENDPOINT'] ?? 'http://localhost:8765';
   print('🔍 Checking server at $serverUrl...');
   final serverReachable = await _checkServer(serverUrl);
 
@@ -228,7 +228,7 @@ Future<void> testLoggedStorageSoftDelete() async {
   final history = await runs.getHistory('run-soft-002');
   print('      Found: ${history.length} log entries');
   for (final log in history) {
-    print('         - ${log.operation} by ${log.changedBy} at ${log.timestamp}');
+    print('         - ${log.operation} by ${log.changedBy} at ${log.changedAt}');
   }
 
   // Restore run 2

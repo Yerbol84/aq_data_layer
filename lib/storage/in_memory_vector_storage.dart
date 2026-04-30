@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 /// In-memory vector storage with brute-force cosine similarity search.
 ///
@@ -10,7 +9,6 @@ import 'package:meta/meta.dart';
 /// - O(n·d) search — suitable for development, tests, and small corpora
 ///   (< ~10 000 vectors with d ≤ 1536).
 /// - For production, replace with [QdrantVectorStorage] or [PgVectorStorage].
-@internal
 final class InMemoryVectorStorage implements VectorStorage {
   // collection → { id → VectorEntry }
   final _store = <String, Map<String, VectorEntry>>{};

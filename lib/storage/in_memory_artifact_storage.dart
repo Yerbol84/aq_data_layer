@@ -1,12 +1,10 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 /// In-memory [ArtifactStorage] for tests and demos.
 ///
 /// Stores byte arrays in a plain Dart Map.
 /// Data is lost when the process exits.
-@internal
 final class InMemoryArtifactStorage implements ArtifactStorage {
   final _store = <String, List<int>>{};
 

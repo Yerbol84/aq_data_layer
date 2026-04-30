@@ -9,7 +9,7 @@ void main() async {
   print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
   // Check 1: Server reachability
-  final serverUrl = 'http://localhost:8765';
+  final serverUrl = Platform.environment['VAULT_ENDPOINT'] ?? 'http://localhost:8765';
   print('🔍 Checking server at $serverUrl...');
   final serverReachable = await _checkServer(serverUrl);
 
@@ -148,11 +148,13 @@ Future<void> testDirectStorage() async {
     exit(1);
   }
 
-  // Delete
+  // Delete (soft delete — record stays with deletedAt set)
   await projects.delete(project.id);
   final deleted = await projects.findById(project.id);
   if (deleted == null) {
-    print('✅ Deleted: ${project.id}\n');
+    print('✅ Deleted (hard): ${project.id}\n');
+  } else if (deleted.toMap()['deletedAt'] != null) {
+    print('✅ Soft deleted: ${project.id}\n');
   } else {
     print('❌ Failed to delete project');
     exit(1);
@@ -219,7 +221,7 @@ Future<void> testLoggedStorage() async {
   // Delete
   await runs.delete(run.id, actorId: 'user-001');
   final deleted = await runs.findById(run.id);
-  if (deleted == null) {
+  if (deleted == null || deleted.toMap()['deletedAt'] != null) {
     print('✅ Deleted: ${run.id}\n');
   } else {
     print('❌ Failed to delete run');
@@ -269,7 +271,7 @@ Future<void> testMigrations() async {
   // Delete
   await docs.delete(doc.id);
   final deleted = await docs.findById(doc.id);
-  if (deleted == null) {
+  if (deleted == null || deleted.toMap()['deletedAt'] != null) {
     print('✅ Deleted: ${doc.id}\n');
   } else {
     print('❌ Failed to delete document');

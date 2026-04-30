@@ -1,10 +1,9 @@
 import 'dart:convert';
 import 'package:postgres/postgres.dart';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 import '../../deploy/schema_deployer.dart';
 import '../../deploy/domain_registration.dart';
-import '../versioned_storage_contract.dart';
+import '../../deploy/versioned_storage_schema.dart';
 
 /// PostgreSQL implementation of [SchemaDeployer].
 ///
@@ -25,14 +24,13 @@ import '../versioned_storage_contract.dart';
 /// ## Migrations
 ///
 /// Migrations are tracked in `_vault_migrations` table.
-@internal
 final class PostgresSchemaDeployer implements SchemaDeployer {
-  final Pool _pool;
+  final Pool<Object?> _pool;
 
-  PostgresSchemaDeployer({required Pool pool}) : _pool = pool;
+  PostgresSchemaDeployer({required Pool<Object?> pool}) : _pool = pool;
 
   /// Доступ к пулу соединений.
-  Pool get pool => _pool;
+  Pool<Object?> get pool => _pool;
 
   @override
   Future<void> ensureSchema(List<DomainRegistration> domains) async {
@@ -63,23 +61,12 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
     }
   }
 
-  /// Создать таблицы для домена в зависимости от режима.
+  /// Создать таблицы для домена — делегирует в schema.deploy().
+  /// Нет switch по режимам — каждый тип хранения знает свою структуру.
   Future<void> _createTablesForDomain(DomainRegistration domain) async {
-    switch (domain.mode) {
-      case StorageMode.direct:
-        await _createDirectTable(domain);
-        break;
-      case StorageMode.versioned:
-        await _createVersionedTables(domain);
-        break;
-      case StorageMode.logged:
-        await _createLoggedTables(domain);
-        break;
-      case StorageMode.artifact:
-      case StorageMode.vector:
-        // TODO: Implement in future sprints
-        break;
-    }
+    await _pool.run((Session connection) async {
+      await domain.schema.deploy(connection, domain.indexes);
+    });
   }
 
   /// Ensure _vault_migrations table exists.
@@ -195,47 +182,6 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
     });
   }
 
-  /// Enable Row Level Security (RLS) on a table.
-  /// Creates policies for tenant isolation.
-  Future<void> _enableRls(String tableName) async {
-    await _pool.run((Session connection) async {
-      // Enable RLS on the table (FORCE применяет RLS даже к владельцу таблицы)
-      await connection.execute('ALTER TABLE $tableName ENABLE ROW LEVEL SECURITY');
-      await connection.execute('ALTER TABLE $tableName FORCE ROW LEVEL SECURITY');
-
-      // Policy for SELECT: see only own tenant data
-      await connection.execute('''
-        DO \$\$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_policies
-            WHERE tablename = '$tableName' AND policyname = '${tableName}_tenant_isolation'
-          ) THEN
-            CREATE POLICY ${tableName}_tenant_isolation
-            ON $tableName
-            USING (tenant_id = current_setting('app.current_tenant', true));
-          END IF;
-        END \$\$;
-      ''');
-
-      // Policy for INSERT: insert only into own tenant
-      await connection.execute('''
-        DO \$\$
-        BEGIN
-          IF NOT EXISTS (
-            SELECT 1 FROM pg_policies
-            WHERE tablename = '$tableName' AND policyname = '${tableName}_tenant_insert'
-          ) THEN
-            CREATE POLICY ${tableName}_tenant_insert
-            ON $tableName
-            FOR INSERT
-            WITH CHECK (tenant_id = current_setting('app.current_tenant', true));
-          END IF;
-        END \$\$;
-      ''');
-    });
-  }
-
   @override
   Future<void> applyMigration(DomainMigration migration) async {
     await _pool.run((Session connection) async {
@@ -277,7 +223,12 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
       }
 
       // Create new indexes
-      await _createIndexes(migration.collection, migration.indexesToCreate);
+      for (final index in migration.indexesToCreate) {
+        await connection.execute('''
+          CREATE INDEX IF NOT EXISTS ${index.name}
+          ON ${migration.collection}((data->>'${index.field}'))
+        ''');
+      }
 
       // Record migration
       await connection.execute(
@@ -334,216 +285,6 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
           appliedAt: row[4] as DateTime,
         );
       }).toList();
-    });
-  }
-
-  /// Create table for Direct mode.
-  Future<void> _createDirectTable(DomainRegistration domain) async {
-    await _pool.run((Session connection) async {
-      final keys = Storable.keys.dbKeys;
-
-      // Main table: id, tenant_id, data, timestamps
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS ${domain.collection} (
-          ${keys.id} TEXT NOT NULL,
-          ${keys.tenantId} TEXT NOT NULL,
-          ${keys.data} JSONB NOT NULL,
-          ${keys.createdAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          ${keys.updatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (${keys.id}, ${keys.tenantId})
-        )
-      ''');
-
-      // Create indexes
-      await _createIndexes(domain.collection, domain.indexes);
-
-      // Create index on tenant_id for fast filtering
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${domain.collection}_tenant
-        ON ${domain.collection}(${keys.tenantId})
-      ''');
-
-      // Enable RLS for tenant isolation
-      await _enableRls(domain.collection);
-    });
-
-    // Create deleted table for soft/hard delete tracking
-    await _createDeletedTable(domain.collection);
-  }
-
-  /// Create tables for Versioned mode.
-  Future<void> _createVersionedTables(DomainRegistration domain) async {
-    await _pool.run((Session connection) async {
-      final versionsTable = VersionedStorageContract.versionsTable(domain.collection);
-      final currentTable = VersionedStorageContract.currentTable(domain.collection);
-
-      // Versions table: stores all version nodes
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS $versionsTable (
-          ${VersionedStorageContract.kNodeId} TEXT PRIMARY KEY,
-          ${VersionedStorageContract.kEntityId} TEXT NOT NULL,
-          ${VersionedStorageContract.kParentNodeId} TEXT,
-          ${VersionedStorageContract.kTenantId} TEXT NOT NULL,
-          ${VersionedStorageContract.kVersion} TEXT,
-          ${VersionedStorageContract.kStatus} TEXT NOT NULL,
-          ${VersionedStorageContract.kBranch} TEXT NOT NULL DEFAULT 'main',
-          ${VersionedStorageContract.kSequenceNumber} INTEGER NOT NULL DEFAULT 1,
-          ${VersionedStorageContract.kCreatedBy} TEXT NOT NULL DEFAULT '',
-          ${VersionedStorageContract.kCreatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          ${VersionedStorageContract.kData} JSONB NOT NULL
-        )
-      ''');
-
-      // Current table: tracks current version per entity
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS $currentTable (
-          ${VersionedStorageContract.kEntityId} TEXT NOT NULL,
-          ${VersionedStorageContract.kTenantId} TEXT NOT NULL,
-          ${VersionedStorageContract.kNodeId} TEXT NOT NULL,
-          ${VersionedStorageContract.kUpdatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (${VersionedStorageContract.kEntityId}, ${VersionedStorageContract.kTenantId})
-        )
-      ''');
-
-      // Indexes
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${domain.collection}_versions_entity
-        ON $versionsTable(${VersionedStorageContract.kEntityId}, ${VersionedStorageContract.kTenantId})
-      ''');
-
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${domain.collection}_versions_status
-        ON $versionsTable(${VersionedStorageContract.kStatus})
-      ''');
-
-      await _createIndexes(versionsTable, domain.indexes);
-
-      // Enable RLS for tenant isolation
-      await _enableRls(versionsTable);
-      await _enableRls(currentTable);
-    });
-
-    // Create deleted table for soft/hard delete tracking
-    await _createDeletedTable(domain.collection);
-  }
-
-  /// Create tables for Logged mode.
-  Future<void> _createLoggedTables(DomainRegistration domain) async {
-    await _pool.run((Session connection) async {
-      final keys = Storable.keys.dbKeys;
-
-      // Main table
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS ${domain.collection} (
-          ${keys.id} TEXT NOT NULL,
-          ${keys.tenantId} TEXT NOT NULL,
-          ${keys.data} JSONB NOT NULL,
-          ${keys.createdAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          ${keys.updatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (${keys.id}, ${keys.tenantId})
-        )
-      ''');
-
-      // Log table: unified schema (id, tenant_id, data JSONB)
-      // LogEntry хранится как документ в data JSONB
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS ${domain.collection}_log (
-          ${keys.id} TEXT NOT NULL,
-          ${keys.tenantId} TEXT NOT NULL,
-          ${keys.data} JSONB NOT NULL,
-          ${keys.createdAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          ${keys.updatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (${keys.id}, ${keys.tenantId})
-        )
-      ''');
-
-      // Indexes
-      await _createIndexes(domain.collection, domain.indexes);
-
-      // Index на entityId внутри JSONB для быстрого поиска логов по сущности
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${domain.collection}_log_entity
-        ON ${domain.collection}_log((${keys.data}->>'${LogEntry.keys.jsonKeys.entityId}'))
-      ''');
-
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${domain.collection}_tenant
-        ON ${domain.collection}(${keys.tenantId})
-      ''');
-
-      // Enable RLS for tenant isolation
-      await _enableRls(domain.collection);
-      await _enableRls('${domain.collection}_log');
-    });
-
-    // Create deleted table for soft/hard delete tracking
-    await _createDeletedTable(domain.collection);
-  }
-
-  /// Create deleted table for any storage mode.
-  /// This table stores snapshots of deleted entities for audit and restore.
-  ///
-  /// Used by all storage modes (Direct, Logged, Versioned) to track deletions.
-  /// Supports both soft delete (entity marked as deleted) and hard delete
-  /// (entity removed from main table).
-  Future<void> _createDeletedTable(String collection) async {
-    await _pool.run((Session connection) async {
-      final keys = Storable.keys.dbKeys;
-      final deletedTable = '${collection}_deleted';
-
-      // Deleted table: stores full entity snapshot + deletion metadata
-      await connection.execute('''
-        CREATE TABLE IF NOT EXISTS $deletedTable (
-          ${keys.id} TEXT NOT NULL,
-          ${keys.tenantId} TEXT NOT NULL,
-          ${keys.data} JSONB NOT NULL,
-          ${keys.deletedAt} TIMESTAMPTZ NOT NULL,
-          deleted_by TEXT NOT NULL,
-          delete_type TEXT NOT NULL,
-          ${keys.createdAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          ${keys.updatedAt} TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          PRIMARY KEY (${keys.id}, ${keys.tenantId})
-        )
-      ''');
-
-      // Index on deleted_at for time-based queries
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${collection}_deleted_at
-        ON $deletedTable(${keys.deletedAt})
-      ''');
-
-      // Index on delete_type for filtering soft/hard deletes
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${collection}_delete_type
-        ON $deletedTable(delete_type)
-      ''');
-
-      // Index on tenant_id for fast filtering
-      await connection.execute('''
-        CREATE INDEX IF NOT EXISTS idx_${collection}_deleted_tenant
-        ON $deletedTable(${keys.tenantId})
-      ''');
-
-      // Enable RLS for tenant isolation
-      await _enableRls(deletedTable);
-    });
-  }
-
-  /// Create indexes from domain.indexes.
-  Future<void> _createIndexes(
-    String tableName,
-    List<VaultIndex> indexes,
-  ) async {
-    if (indexes.isEmpty) return;
-
-    await _pool.run((Session connection) async {
-      for (final index in indexes) {
-        // Create index on JSONB field using -> operator
-        await connection.execute('''
-          CREATE INDEX IF NOT EXISTS ${index.name}
-          ON $tableName((data->>'${index.field}'))
-        ''');
-      }
     });
   }
 
@@ -648,8 +389,9 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
 
   /// Валидировать таблицы для Versioned режима.
   Future<void> _validateVersionedTables(DomainRegistration domain) async {
-    final versionsTable = VersionedStorageContract.versionsTable(domain.collection);
-    final currentTable = VersionedStorageContract.currentTable(domain.collection);
+    final schema = domain.schema as VersionedStorageSchema;
+    final versionsTable = schema.tableNames.versions!;
+    final currentTable = schema.tableNames.current!;
 
     if (!await _tableExists(versionsTable)) {
       throw StateError(
@@ -668,16 +410,16 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
     // Проверка структуры _versions таблицы
     final versionsColumns = await _getTableColumns(versionsTable);
     final requiredVersionsColumns = {
-      VersionedStorageContract.kNodeId,
-      VersionedStorageContract.kEntityId,
-      VersionedStorageContract.kTenantId,
-      VersionedStorageContract.kVersion,
-      VersionedStorageContract.kStatus,
-      VersionedStorageContract.kBranch,
-      VersionedStorageContract.kData,
-      VersionedStorageContract.kCreatedAt,
-      VersionedStorageContract.kCreatedBy,
-      VersionedStorageContract.kSequenceNumber,
+      VersionedStorageSchema.kNodeId,
+      VersionedStorageSchema.kEntityId,
+      VersionedStorageSchema.kTenantId,
+      VersionedStorageSchema.kVersion,
+      VersionedStorageSchema.kStatus,
+      VersionedStorageSchema.kBranch,
+      VersionedStorageSchema.kData,
+      VersionedStorageSchema.kCreatedAt,
+      VersionedStorageSchema.kCreatedBy,
+      VersionedStorageSchema.kSequenceNumber,
     };
     final missingVersionsColumns = requiredVersionsColumns.difference(versionsColumns.keys.toSet());
 
@@ -690,10 +432,10 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
     // Проверка структуры _current таблицы
     final currentColumns = await _getTableColumns(currentTable);
     final requiredCurrentColumns = {
-      VersionedStorageContract.kEntityId,
-      VersionedStorageContract.kTenantId,
-      VersionedStorageContract.kNodeId,
-      VersionedStorageContract.kUpdatedAt,
+      VersionedStorageSchema.kEntityId,
+      VersionedStorageSchema.kTenantId,
+      VersionedStorageSchema.kNodeId,
+      VersionedStorageSchema.kUpdatedAt,
     };
     final missingCurrentColumns = requiredCurrentColumns.difference(currentColumns.keys.toSet());
 
@@ -707,7 +449,7 @@ final class PostgresSchemaDeployer implements SchemaDeployer {
   /// Валидировать таблицы для Logged режима.
   Future<void> _validateLoggedTables(DomainRegistration domain) async {
     final keys = Storable.keys.dbKeys;
-    final logTable = '${domain.collection}_log';
+    final logTable = domain.schema.tableNames.log!;
 
     if (!await _tableExists(logTable)) {
       throw StateError(

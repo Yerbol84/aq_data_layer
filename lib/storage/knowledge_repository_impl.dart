@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../repositories/knowledge_repository.dart';
 
@@ -23,7 +22,6 @@ import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 /// ## Encryption
 /// Not the responsibility of this package.  Encrypt [fileBytes] before
 /// calling [save]; decrypt after [loadBytes].
-@internal
 final class KnowledgeRepositoryImpl<T extends KnowledgeDocument>
     implements KnowledgeRepository<T> {
   final ArtifactStorage _binaryStore;

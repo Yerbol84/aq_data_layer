@@ -7,7 +7,6 @@ library;
 
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 import 'in_memory_vault_storage.dart';
 
 /// Локальный рабочий буфер поверх любого [VaultStorage].
@@ -38,7 +37,6 @@ import 'in_memory_vault_storage.dart';
 /// ## Запросы (query)
 /// Remote запрос + override из буфера по dirty ID.
 /// Новые localOnly записи добавляются поверх remote результата.
-@internal
 final class LocalBufferVaultStorage implements IBufferedStorage {
   final VaultStorage _remote;
   final InMemoryVaultStorage _buffer = InMemoryVaultStorage();

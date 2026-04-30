@@ -1,13 +1,12 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 import 'remote_vault_storage.dart';
 
-/// Remote implementation of [LoggedRepository] that uses RPC directly.
+/// Remote implementation of [LoggedRepository].
 ///
-/// Unlike [LoggedRepositoryImpl] which works through [VaultStorage.put/get],
-/// this implementation calls RPC operations directly with proper actorId support.
-@internal
+/// Тонкий клиент — только типизированные команды/запросы через [RemoteVaultStorage].
+/// Не знает о SQL, не знает о _log таблицах, не содержит бизнес-логики.
+/// Бизнес-логика живёт на сервере в [LoggedRepositoryImpl].
 final class RemoteLoggedRepository<T extends LoggedStorable>
     implements LoggedRepository<T> {
   final RemoteVaultStorage _storage;
@@ -22,38 +21,45 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
         _collection = collection,
         _fromMap = fromMap;
 
-  // ── Helper: Serialize VaultQuery ──────────────────────────────────────────
-
-  Map<String, dynamic> _serializeQuery(VaultQuery q) => {
-        'filters': q.filters
-            .map((f) => {
-                  'field': f.field,
-                  'operator': f.operator.name,
-                  'value': f.value,
-                })
-            .toList(),
-        'sortField': q.sort?.field,
-        'sortDescending': q.sort?.descending ?? false,
-        'limit': q.limit,
-        'offset': q.offset,
-      };
+  // ── Write ──────────────────────────────────────────────────────────────────
 
   @override
-  Future<void> save(T entity, {required String actorId}) async {
-    await _storage.rpc(_collection, 'put', {
-      'id': entity.id,
-      'data': entity.toMap(),
-      'actorId': actorId,
-    });
-  }
+  Future<void> save(T entity, {required String actorId}) =>
+      _storage.rpc(_collection, 'put', {
+        'data': entity.toMap(),
+        'actorId': actorId,
+      });
 
   @override
-  Future<void> delete(String entityId, {required String actorId}) async {
-    await _storage.rpc(_collection, 'delete', {
-      'id': entityId,
-      'actorId': actorId,
-    });
-  }
+  Future<void> delete(String entityId, {required String actorId}) =>
+      _storage.rpc(_collection, 'delete', {
+        'id': entityId,
+        'actorId': actorId,
+      });
+
+  @override
+  Future<void> restore(String entityId, {required String actorId}) =>
+      _storage.rpc(_collection, 'restore', {
+        'id': entityId,
+        'actorId': actorId,
+      });
+
+  @override
+  Future<void> rollbackTo(
+    String entityId,
+    String entryId, {
+    required String actorId,
+  }) =>
+      _storage.sendCommand(
+        _collection,
+        RollbackToCommand(
+          entityId: entityId,
+          entryId: entryId,
+          actorId: actorId,
+        ),
+      );
+
+  // ── Read ───────────────────────────────────────────────────────────────────
 
   @override
   Future<T?> findById(String id) async {
@@ -67,8 +73,17 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
     final res = await _storage.rpc(_collection, 'query', {
       if (query != null) 'query': _serializeQuery(query),
     });
-    final list = res as List? ?? [];
-    return list
+    return (res as List? ?? [])
+        .map((e) => _fromMap(Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
+  @override
+  Future<List<T>> findAllIncludingDeleted({VaultQuery? query}) async {
+    final res = await _storage.rpc(_collection, 'queryIncludingDeleted', {
+      if (query != null) 'query': _serializeQuery(query),
+    });
+    return (res as List? ?? [])
         .map((e) => _fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
@@ -78,13 +93,10 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
     final res = await _storage.rpc(_collection, 'queryPage', {
       'query': _serializeQuery(query),
     }) as Map<String, dynamic>;
-
-    final items = (res['items'] as List)
-        .map((e) => _fromMap(Map<String, dynamic>.from(e as Map)))
-        .toList();
-
     return PageResult(
-      items: items,
+      items: (res['items'] as List)
+          .map((e) => _fromMap(Map<String, dynamic>.from(e as Map)))
+          .toList(),
       total: res['total'] as int,
       offset: res['offset'] as int,
       limit: res['limit'] as int,
@@ -105,16 +117,15 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
     return res as bool? ?? false;
   }
 
+  // ── History ────────────────────────────────────────────────────────────────
+
   @override
-  Future<List<LogEntry>> getHistory(String entityId) async {
-    final res = await _storage.rpc(_collection, 'getHistory', {
-      'entityId': entityId,
-    });
-    final list = res as List? ?? [];
-    return list
-        .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
-        .toList();
-  }
+  Future<List<LogEntry>> getHistory(String entityId) =>
+      _storage.sendQuery(_collection, GetHistoryQuery(entityId)).then(
+            (res) => (res as List? ?? [])
+                .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
+                .toList(),
+          );
 
   @override
   Future<List<LogEntry>> queryHistory(String entityId, VaultQuery query) async {
@@ -122,8 +133,7 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
       'entityId': entityId,
       'query': _serializeQuery(query),
     });
-    final list = res as List? ?? [];
-    return list
+    return (res as List? ?? [])
         .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
@@ -135,13 +145,10 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
       'entityId': entityId,
       'query': _serializeQuery(query),
     }) as Map<String, dynamic>;
-
-    final items = (res['items'] as List)
-        .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
-        .toList();
-
     return PageResult(
-      items: items,
+      items: (res['items'] as List)
+          .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
+          .toList(),
       total: res['total'] as int,
       offset: res['offset'] as int,
       limit: res['limit'] as int,
@@ -168,62 +175,49 @@ final class RemoteLoggedRepository<T extends LoggedStorable>
   }
 
   @override
-  Future<List<LogEntry>> getCollectionLog(
-      {DateTime? from, DateTime? to}) async {
+  Future<List<LogEntry>> getCollectionLog({DateTime? from, DateTime? to}) async {
     final res = await _storage.rpc(_collection, 'getCollectionLog', {
       if (from != null) 'from': from.toIso8601String(),
       if (to != null) 'to': to.toIso8601String(),
     });
-    final list = res as List? ?? [];
-    return list
+    return (res as List? ?? [])
         .map((e) => LogEntry.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
 
-  @override
-  Future<void> rollbackTo(
-    String entityId,
-    String entryId, {
-    required String actorId,
-  }) async {
-    await _storage.rpc(_collection, 'rollbackTo', {
-      'entityId': entityId,
-      'entryId': entryId,
-      'actorId': actorId,
-    });
-  }
+  // ── Indexes ────────────────────────────────────────────────────────────────
 
   @override
-  Future<void> registerIndex(VaultIndex index) async {
-    await _storage.rpc(_collection, 'createIndex', {
-      'name': index.name,
-      'field': index.field,
-      'unique': index.unique,
-    });
-  }
+  Future<void> registerIndex(VaultIndex index) =>
+      _storage.rpc(_collection, 'createIndex', {
+        'name': index.name,
+        'field': index.field,
+        'unique': index.unique,
+      });
+
+  // ── Streams ────────────────────────────────────────────────────────────────
 
   @override
-  Stream<List<LogEntry>> watchHistory(String entityId) {
-    // TODO: Implement SSE-based watch
-    throw UnimplementedError(
-        'watchHistory not yet implemented for remote storage');
-  }
+  Stream<List<LogEntry>> watchHistory(String entityId) =>
+      throw UnimplementedError('watchHistory not yet implemented for remote');
 
   @override
-  Stream<List<T>> watchAll({VaultQuery? query}) {
-    // TODO: Implement SSE-based watch
-    throw UnimplementedError('watchAll not yet implemented for remote storage');
-  }
+  Stream<List<T>> watchAll({VaultQuery? query}) =>
+      throw UnimplementedError('watchAll not yet implemented for remote');
 
-  @override
-  Future<List<T>> findAllIncludingDeleted({VaultQuery? query}) {
-    // TODO: implement findAllIncludingDeleted
-    throw UnimplementedError();
-  }
+  // ── Private ────────────────────────────────────────────────────────────────
 
-  @override
-  Future<void> restore(String entityId, {required String actorId}) {
-    // TODO: implement restore
-    throw UnimplementedError();
-  }
+  Map<String, dynamic> _serializeQuery(VaultQuery q) => {
+        'filters': q.filters
+            .map((f) => {
+                  'field': f.field,
+                  'operator': f.operator.name,
+                  'value': f.value,
+                })
+            .toList(),
+        'sortField': q.sort?.field,
+        'sortDescending': q.sort?.descending ?? false,
+        'limit': q.limit,
+        'offset': q.offset,
+      };
 }

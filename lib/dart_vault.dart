@@ -48,7 +48,7 @@ library dart_vault;
 
 import 'package:aq_schema/aq_schema.dart';
 
-import 'server.dart';
+import 'client/data_layer_impl.dart';
 
 // ── Единственная точка входа для клиента ──────────────────────────────────
 export 'client/vault.dart' show Vault;
@@ -110,3 +110,18 @@ Future<void> initializeDataLayer({
   );
   IDataLayer.register(impl);
 }
+
+// Register initializer so IDataLayer.initialize() works when dart_vault is imported.
+final _dartVaultInit = () {
+  IDataLayer.registerInitializer(({
+    required String endpoint,
+    String tenantId = 'system',
+    bool useBuffer = true,
+  }) =>
+      initializeDataLayer(
+        endpoint: endpoint,
+        tenantId: tenantId,
+        useBuffer: useBuffer,
+      ));
+}();
+

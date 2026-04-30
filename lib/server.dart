@@ -66,6 +66,9 @@ export 'storage/supabase_vault_storage.dart';
 export 'storage/postgres/postgres_vault_storage.dart';
 export 'storage/postgres/postgres_schema_deployer.dart';
 export 'storage/postgres/postgres_versioned_repository.dart';
+export 'storage/sql/i_sql_query_compiler.dart';
+export 'storage/sql/postgres_query_compiler.dart';
+export 'storage/sql/sql_vault_storage.dart';
 export 'storage/direct_repository_impl.dart';
 export 'storage/versioned_repository_impl.dart';
 export 'storage/logged_repository_impl.dart';
@@ -84,28 +87,7 @@ export 'client/remote/vault_client.dart';
 export 'client/remote/remote_logged_repository.dart';
 
 // ── Security (ТОЛЬКО на сервере) ──────────────────────────────────────────
-export 'security/rate_limit_store.dart';
-export 'security/in_memory_rate_limit_store.dart';
-export 'security/rate_limit_config.dart';
-export 'security/vault_rate_limiter.dart';
-export 'security/dos_config.dart';
-export 'security/dos_protection.dart';
-export 'security/secrets_manager.dart';
-export 'security/secrets_cache.dart';
-export 'security/in_memory_secrets_manager.dart';
-export 'security/vault_http_client.dart';
-export 'security/vault_secrets_manager.dart';
-export 'security/aws_secrets_manager.dart';
-export 'security/credential_rotation_service.dart';
-export 'security/secrets_migration.dart';
-export 'security/audit_event.dart';
-export 'security/audit_logger.dart';
-export 'security/in_memory_audit_logger.dart';
-export 'security/postgres_audit_logger.dart';
-export 'security/audit_retention.dart';
-export 'security/audit_report.dart';
-export 'security/audit_analyzer.dart';
-export 'security/input_sanitizer.dart';
-export 'security/query_validator.dart';
-export 'security/safe_query_builder.dart';
-export 'security/sql_safety_validator.dart';
+// Security логика делегируется через IVaultSecurityProtocol из aq_schema.
+// Реализация живёт в пакете aq_security.
+// Файлы в lib/security/ — временный артефакт, будут перенесены в aq_security.
+// Не экспортируем их здесь — они не являются частью публичного API data layer.

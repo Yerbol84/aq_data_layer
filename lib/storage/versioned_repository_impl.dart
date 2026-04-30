@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
+import '../client/remote/remote_vault_storage.dart';
 import '../storage/local_buffer_vault_storage.dart';
 import '../exceptions/vault_exceptions.dart';
 
@@ -36,7 +36,6 @@ Stream<List<T>> _watchWithBuffer<T>(
 /// - [_BranchOps]     — branching and merge
 /// - [_AccessOps]     — grants / revoke / check
 /// - [_QueryOps]      — listVersions, findNodes, etc.
-@internal
 final class VersionedRepositoryImpl<T extends VersionedStorable>
     implements VersionedRepository<T> {
   final VaultStorage _storage;
@@ -156,12 +155,11 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: сервер сам управляет структурой
-      await _storage.put(_collection, nodeId, {
-        ...node.toMap(),
-        'operation': 'createDraftFrom',
-        'parentNodeId': parentNodeId,
-      });
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
+        _collection,
+        CreateDraftFromCommand(parentNodeId: parentNodeId, data: model.toMap()),
+      );
     } else {
       // Local: работаем с внутренними коллекциями
       await _ensureCollections();
@@ -190,15 +188,10 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: используем RPC операцию updateDraft напрямую
-      // Отправляем модель, а не VersionNode!
-      await (baseStorage as dynamic).rpc(
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
         _collection,
-        'updateDraft',
-        {
-          'nodeId': nodeId,
-          'data': model.toMap(),
-        },
+        UpdateDraftCommand(nodeId: nodeId, data: model.toMap()),
       );
     } else {
       // Local: обновление в __nodes
@@ -237,13 +230,11 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: сервер сам обновит метаданные
-      // ВАЖНО: используем baseStorage, а не _storage!
-      await baseStorage.put(_collection, nodeId, {
-        ...published.toMap(),
-        'operation': 'publishDraft',
-        'increment': increment.name,
-      });
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
+        _collection,
+        PublishDraftCommand(nodeId: nodeId, increment: increment),
+      );
     } else {
       // Local: обновляем __nodes и __meta
       await _storage.put(_nodesCol, nodeId, published.toMap());
@@ -368,12 +359,15 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: сервер сам управляет структурой
-      await _storage.put(_collection, nodeId, {
-        ...node.toMap(),
-        'operation': 'createBranch',
-        'branchName': branchName,
-      });
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
+        _collection,
+        CreateBranchCommand(
+          parentNodeId: parentNodeId,
+          branchName: branchName,
+          data: model.toMap(),
+        ),
+      );
     } else {
       // Local: работаем с внутренними коллекциями
       await _ensureCollections();
@@ -431,12 +425,15 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: сервер сам управляет структурой
-      await _storage.put(_collection, nodeId, {
-        ...mergedNode.toMap(),
-        'operation': 'mergeToMain',
-        'sourceBranch': sourceBranch,
-      });
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
+        _collection,
+        MergeToMainCommand(
+          entityId: entityId,
+          sourceBranch: sourceBranch,
+          requesterId: requesterId,
+        ),
+      );
     } else {
       // Local: работаем с внутренними коллекциями
       await _storage.put(_nodesCol, nodeId, mergedNode.toMap());
@@ -483,11 +480,15 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
         : _storage;
 
     if (baseStorage is ProxyStorage) {
-      // Remote: сервер сам обновит метаданные
-      await _storage.put(_collection, nodeId, {
-        ...updated.toMap(),
-        'operation': 'setCurrentVersion',
-      });
+      // Remote: типизированная команда
+      await (baseStorage as RemoteVaultStorage).sendCommand(
+        _collection,
+        SetCurrentVersionCommand(
+          entityId: entityId,
+          nodeId: nodeId,
+          requesterId: requesterId,
+        ),
+      );
     } else {
       // Local: обновляем __nodes и __meta
       await _storage.put(_nodesCol, nodeId, updated.toMap());

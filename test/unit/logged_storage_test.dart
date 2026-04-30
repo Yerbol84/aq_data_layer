@@ -26,6 +26,9 @@ class TestLoggedEntity implements LoggedStorable {
   String get collectionName => 'test_logged_entities';
 
   @override
+  bool get softDelete => false;
+
+  @override
   Set<String> get trackedFields => {}; // Пустой = отслеживаем все поля
 
   @override
