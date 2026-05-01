@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:aq_schema/aq_schema.dart';
-import 'package:meta/meta.dart';
 
 import '../exceptions/vault_exceptions.dart';
 
@@ -38,7 +37,6 @@ import '../exceptions/vault_exceptions.dart';
 /// data      JSONB NOT NULL
 /// tenant_id TEXT  (optional, for RLS)
 /// ```
-@internal
 final class SupabaseVaultStorage implements VaultStorage, SqlQueryTranslator {
   final String _baseUrl;
   final String _anonKey;
@@ -342,7 +340,7 @@ CREATE INDEX IF NOT EXISTS idx_${collection}_${index.field.replaceAll('.', '_')}
     }
   }
 
-  List<Map<String, dynamic>> _extractDataList(List rows) {
+  List<Map<String, dynamic>> _extractDataList(List<dynamic> rows) {
     return rows.map((r) {
       final d = (r as Map<String, dynamic>)['data'];
       if (d is Map) return Map<String, dynamic>.from(d);
@@ -385,7 +383,7 @@ CREATE INDEX IF NOT EXISTS idx_${collection}_${index.field.replaceAll('.', '_')}
     }
   }
 
-  Future<(List, int)> _requestWithCount(String method, String path) async {
+  Future<(List<dynamic>, int)> _requestWithCount(String method, String path) async {
     final uri = Uri.parse('$_baseUrl$path');
     final client = HttpClient();
     try {
@@ -404,7 +402,7 @@ CREATE INDEX IF NOT EXISTS idx_${collection}_${index.field.replaceAll('.', '_')}
         total = int.tryParse(parts.last) ?? 0;
       }
 
-      final decoded = raw.isEmpty ? [] : jsonDecode(raw) as List;
+      final decoded = raw.isEmpty ? <dynamic>[] : jsonDecode(raw) as List<dynamic>;
       return (decoded, total);
     } catch (e) {
       client.close();
@@ -436,7 +434,7 @@ CREATE INDEX IF NOT EXISTS idx_${collection}_${index.field.replaceAll('.', '_')}
 
   void _addHeaders(HttpClientRequest req, {required bool useServiceKey}) {
     final key =
-        (useServiceKey && _serviceKey != null) ? _serviceKey! : _anonKey;
+        (useServiceKey && _serviceKey != null) ? _serviceKey : _anonKey;
     req.headers
       ..set('apikey', key)
       ..set('Authorization', 'Bearer $key')

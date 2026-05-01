@@ -1,200 +1,309 @@
-# dart_vault — Универсальный Data Layer для AQ экосистемы
+# dart_vault — Data Layer для AQ экосистемы
 
-**Версия:** 0.4.0
-**Статус:** Production Ready ✅
-**Последнее обновление:** 2026-04-11
-
----
-
-## 🎯 Философия
-
-`dart_vault` — это универсальная система хранения данных, построенная по принципу **"тонкий клиент + чистая архитектура"**:
-
-- ✅ **Клиент не знает о базе данных** — работает только с репозиториями
-- ✅ **Единая схема** — все домены из `aq_schema`, используются везде одинаково
-- ✅ **Унифицированные константы** — все компоненты используют `VersionedStorageContract`
-- ✅ **Multi-tenancy** — изоляция данных на уровне PostgreSQL RLS
-- ✅ **Три типа хранилищ** — Direct, Versioned, Logged для разных use cases
+**Версия:** 0.5.0  
+**Статус:** Production Ready ✅  
+**dart analyze:** 0 errors, 0 warnings  
+**Тестов:** 100/100 ✅
 
 ---
 
-## 📊 Возможности
+## Что это
 
-### Storage Types
+`dart_vault` — типизированный data layer поверх PostgreSQL для Dart/Flutter приложений.
 
-| Тип | Назначение | Use Cases |
-|-----|-----------|-----------|
-| **Direct** | Простые CRUD операции | Проекты, настройки, справочники |
-| **Versioned** | Версионирование с ветками и semver | Workflow graphs, документы с историей |
-| **Logged** | Audit trail с полной историей | Workflow runs, audit logs |
+**Три слоя хранения:**
+- **VaultStorage** — документы (Direct / Versioned / Logged)
+- **ArtifactStorage** — бинарные файлы (байты)
+- **VectorStorage** — векторные эмбеддинги (ANN-поиск + hybrid)
 
-### Инфраструктура
-
-- ✅ PostgreSQL с JSONB и RLS
-- ✅ Автоматическое создание схемы
-- ✅ ACID транзакции
-- ✅ HTTP RPC протокол
-- ✅ Буферизация записей
-- ✅ 97% покрытие тестами
+**Архитектура:** тонкий клиент + RPC сервер. Клиент не знает о БД.
 
 ---
 
-## 🚀 Быстрый старт
+## Быстрый старт
 
-### Клиент (Flutter приложение)
+### 1. Запустить стек
+
+```bash
+cd example/stack
+docker-compose up -d
+# Поднимает: postgres (pgvector) + ollama + server
+```
+
+### 2. Клиент
 
 ```dart
-// ВАЖНО: Импортируйте ТОЛЬКО dart_vault.dart для клиента
 import 'package:dart_vault/dart_vault.dart';
 import 'package:aq_schema/aq_schema.dart';
 
 void main() async {
-  // Подключиться к Data Service
-  await Vault.connect('http://localhost:8765', tenantId: 'user-123');
-  runApp(MyApp());
+  await initializeDataLayer(
+    endpoint: 'http://localhost:8765',
+    tenantId: 'my-tenant',
+    authToken: 'my-token',
+  );
+
+  // Direct — простой CRUD
+  final projects = IDataLayer.instance.direct<MyProject>(
+    collection: 'projects',
+    fromMap: MyProject.fromMap,
+  );
+  await projects.save(project);
+
+  // Versioned — с ветками и историей
+  final graphs = IDataLayer.instance.versioned<WorkflowGraph>(
+    collection: WorkflowGraph.kCollection,
+    fromMap: WorkflowGraph.fromMap,
+  );
+  final node = await graphs.createEntity(graph);
+  await graphs.publishDraft(node.nodeId);
+
+  // Logged — с audit trail
+  final annotations = IDataLayer.instance.logged<DocumentAnnotation>(
+    collection: DocumentAnnotation.kCollection,
+    fromMap: DocumentAnnotation.fromMap,
+  );
+  await annotations.save(annotation, actorId: userId);
+  final history = await annotations.getHistory(annotationId);
 }
+```
 
-// Использовать репозитории
-final workflows = Vault.instance.versioned<WorkflowGraph>(
-  collection: WorkflowGraph.kCollection,
-  fromMap: WorkflowGraph.fromMap,
+### 3. Файлы (Artifacts)
+
+```dart
+// Upload bytes
+final remote = RemoteVaultStorage(endpoint: endpoint, tenantId: tenantId);
+await remote.connect();
+final artifacts = RemoteArtifactStorage(remote: remote);
+await artifacts.put('tenant/doc-001/file.pdf', pdfBytes, contentType: 'application/pdf');
+
+// Save metadata
+final artifactRepo = IDataLayer.instance.direct<StoredArtifact>(
+  collection: StoredArtifact.kCollection,
+  fromMap: StoredArtifact.fromMap,
+);
+await artifactRepo.save(StoredArtifact(
+  id: 'doc-001',
+  tenantId: tenantId,
+  ownerId: userId,
+  storageKey: 'tenant/doc-001/file.pdf',
+  fileName: 'report.pdf',
+  contentType: 'application/pdf',
+  sizeBytes: pdfBytes.length,
+  checksum: sha256(pdfBytes),
+  createdAt: DateTime.now().toUtc(),
+));
+```
+
+### 4. Векторный поиск
+
+```dart
+// Настройка pipeline
+final embedder = OllamaEmbeddingsClient(
+  endpoint: 'http://localhost:11434',
+  model: 'nomic-embed-text',
+  dimensions: 768,
 );
 
-// CRUD операции
-final node = await workflows.createEntity(workflow);
-await workflows.updateDraft(node.nodeId, updatedWorkflow);
-final published = await workflows.publishDraft(node.nodeId);
-
-// Работа с файлами (Artifact)
-final artifactVault = ArtifactVault(tenantId: 'user-123');
-final files = artifactVault.artifacts<MyFile>(
-  collection: 'uploads',
-  fromMap: MyFile.fromMap,
+final registry = VectorStoreRegistryImpl();
+registry.register(
+  VectorStoreDescriptor(id: 'pgvector-main', type: 'pgvector',
+      embedderId: embedder.id, vectorDim: 768),
+  RemoteVectorStorage(remote: remote),
 );
 
-// Работа с документами и векторным поиском (Knowledge)
-final knowledgeVault = KnowledgeVault(tenantId: 'user-123');
-final docs = knowledgeVault.documents<MyDoc>(
-  collection: 'documents',
-  vectorSize: 1536,
-  fromMap: MyDoc.fromMap,
-  embed: (text) => openai.embed(text),
+final vectorRepo = VectorRepositoryImpl(registry: registry);
+
+// Индексировать документ
+await vectorRepo.index(
+  artifact,
+  fileBytes,
+  IndexingPipeline(
+    id: 'my-pipeline',
+    storeId: 'pgvector-main',
+    extractor: PlainTextExtractor(),
+    chunker: SentenceChunker(maxChunkChars: 500),
+    embedder: embedder,
+    reranker: PassthroughReranker(),
+  ),
+);
+
+// Семантический поиск
+final results = await vectorRepo.search(
+  'how does vector similarity work',
+  tenantId: tenantId,
+  storeId: 'pgvector-main',
+  embedder: embedder,
+  topK: 5,
+);
+
+// Hybrid search (dense + BM25)
+final hybridResults = await vectorRepo.search(
+  'SQL injection prevention',
+  tenantId: tenantId,
+  storeId: 'pgvector-main',
+  embedder: embedder,
+  sparseQuery: 'SQL injection prevention',
+  alpha: 0.7, // 70% dense + 30% BM25
 );
 ```
 
-### Сервер (Data Service)
+---
+
+## Сервер
 
 ```dart
-// ВАЖНО: Импортируйте server.dart для серверной части
 import 'package:dart_vault/server.dart';
 import 'package:aq_schema/aq_schema.dart';
-import 'package:postgres/postgres.dart';
 
 void main() async {
-  final pool = await Pool.connect(
-    Endpoint(
-      host: 'localhost',
-      database: 'aq_studio',
-      username: 'postgres',
-      password: 'postgres',
-    ),
-    settings: PoolSettings(maxConnectionCount: 10),
+  final pool = Pool.withEndpoints([Endpoint(host: dbHost, ...)]);
+
+  // Vector storage
+  final vectorStorage = PgVectorStorage(pool: pool);
+  final vectorRegistry = VectorStoreRegistryImpl();
+  vectorRegistry.register(
+    VectorStoreDescriptor(id: 'pgvector-main', type: 'pgvector',
+        embedderId: 'ollama-nomic-embed-text', vectorDim: 768),
+    vectorStorage,
   );
 
-  // Создать registry с security компонентами
+  // Security
+  IVaultSecurityProtocol.initialize(MockVaultSecurityProtocol()); // dev
+  // IVaultSecurityProtocol.initialize(MyProductionProtocol());   // prod
+
   final registry = VaultRegistry(
-    storageFactory: (tenantId) => PostgresVaultStorage(
-      pool: pool,
-      tenantId: tenantId,
-      rateLimiter: VaultRateLimiter(store: InMemoryRateLimitStore()),
-      auditLogger: PostgresAuditLogger(pool: pool),
-    ),
+    storageFactory: (tenantId) => PostgresVaultStorage(pool: pool, tenantId: tenantId),
     deployer: PostgresSchemaDeployer(pool: pool),
+    artifactBackend: LocalArtifactStorage(basePath: '/data/artifacts'),
+    vectorRegistry: vectorRegistry,
   );
 
-  // Регистрация доменов из aq_schema
   for (final domain in AqDomains.all) {
     registry.register(DomainRegistration(
       collection: domain.collection,
-      mode: domain.kind.toStorageMode(),
+      mode: _toStorageMode(domain.kind),
       fromMap: domain.fromMap,
+      indexes: domain.indexes,
+      jsonSchema: const {'type': 'object'},
     ));
   }
 
-  await registry.deploy(); // Создаёт таблицы автоматически
-
-  final handler = createVaultHandler(registry);
-  await io.serve(handler, 'localhost', 8765);
+  await registry.deploy();
 }
 ```
 
 ---
 
-## 📚 Документация
-
-### Основные документы
-
-- **[doc/README.md](doc/README.md)** — навигация по всей документации
-- **[doc/guides/QUICK_START.md](doc/guides/QUICK_START.md)** — быстрый старт для новичков
-- **[doc/guides/USAGE_GUIDE.md](doc/guides/USAGE_GUIDE.md)** — полное руководство пользователя
-
-### Архитектура
-
-- **[doc/architecture/ARCHITECTURE.md](doc/architecture/ARCHITECTURE.md)** — полная архитектура системы
-- **[doc/architecture/KEY_DECISIONS.md](doc/architecture/KEY_DECISIONS.md)** — ключевые архитектурные решения
-- **[doc/architecture/LOGGED_STORABLE_CONVENTION.md](doc/architecture/LOGGED_STORABLE_CONVENTION.md)** — конвенции LoggedStorable
-
-### Отчёты
-
-- **[doc/reports/COMPLIANCE_REPORT.md](doc/reports/COMPLIANCE_REPORT.md)** — отчёт о соответствии production требованиям
-- **[doc/reports/PRODUCTION_READY_STATUS.md](doc/reports/PRODUCTION_READY_STATUS.md)** — статус готовности к production
-
----
-
-## 🧪 Тестирование
-
-```bash
-# Запустить PostgreSQL
-docker-compose up -d
-
-# Запустить все тесты
-dart test
-```
-
-**Результаты:** 34 теста прошли успешно, 97% покрытие кода.
-
----
-
-## 📦 Установка
+## Docker стек
 
 ```yaml
-dependencies:
-  dart_vault: ^0.4.0
-  aq_schema: ^1.0.0
+# example/stack/docker-compose.yml
+services:
+  postgres:   # pgvector/pgvector:pg15 — всегда запущен
+  ollama:     # ollama/ollama:latest — всегда запущен
+  server:     # dart_vault сервер — всегда запущен
 ```
 
-**Клиент (Flutter/Dart приложение):**
-```dart
-// ТОЛЬКО клиентский API — Vault, репозитории, исключения
-import 'package:dart_vault/dart_vault.dart';
+```bash
+# Запустить стек
+docker-compose up -d
+
+# Установить модель эмбеддингов
+docker exec stack-ollama-1 ollama pull nomic-embed-text
+
+# Запустить сценарий
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  -e OLLAMA_ENDPOINT=http://stack-ollama-1:11434 \
+  stack-search_core
 ```
 
-**Сервер (Data Service):**
-```dart
-// Клиентский API + Storage + Deploy + Security
-import 'package:dart_vault/server.dart';
-```
+### Переменные окружения сервера
 
-**ВАЖНО:** Никогда не импортируйте `server.dart` в клиентском приложении!
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `DB_HOST` | `localhost` | PostgreSQL хост |
+| `DB_PORT` | `5432` | PostgreSQL порт |
+| `DB_NAME` | `vault_db` | Имя БД |
+| `SERVER_PORT` | `8765` | Порт сервера |
+| `ARTIFACT_PATH` | — | Путь для файлов (если не задан — файлы не хранятся) |
+| `SECURITY_MODE` | — | `mock` для тестов, пусто — без security |
+| `VECTOR_DIM` | `768` | Размерность векторов |
+| `VECTOR_EMBEDDER_ID` | `ollama-nomic-embed-text` | ID embedder'а |
 
 ---
 
-## 🤝 Вклад
+## Примеры
 
-Проект находится в активной разработке. Приветствуются баг-репорты, предложения и pull requests.
+Все примеры в `example/stack/console_client/`:
+
+| Файл | Описание |
+|---|---|
+| `main_artifacts.dart` | Upload, metadata, annotations, download |
+| `main_vector.dart` | Full vector pipeline, remote RPC |
+| `main_knowledge.dart` | Upload+index+annotate+search |
+| `main_rag_basic.dart` | RAG с Ollama nomic-embed-text |
+| `main_search_core.dart` | Dense search, filter, tenant isolation, scores |
+| `main_search_precision.dart` | Precision@K, MRR evaluation |
+| `main_search_lifecycle.dart` | Index→Reindex→Delete |
+| `main_search_concurrent.dart` | Параллельная индексация |
+| `main_search_chunking.dart` | Сравнение стратегий чанкования |
+| `main_search_reranker.dart` | Reranker evaluation |
+| `main_integration_rag.dart` | Context assembly для RAG |
+| `main_integration_annotations.dart` | chunkId→annotation→span |
+| `main_search_migration.dart` | Миграция между embedder'ами |
+| `main_perf_latency.dart` | Latency benchmark |
+| `main_security.dart` | Security gate scenarios |
+| `main_stress.dart` | Stress scenarios |
 
 ---
 
-## 📄 Лицензия
+## Архитектура
 
-MIT
+```
+aq_schema (интерфейсы и модели)
+  ├── IDataLayer — мультитон data layer
+  ├── VaultStorage — document storage interface
+  ├── ArtifactStorage — binary storage interface
+  ├── VectorStorage — vector search interface (+ hybrid)
+  ├── IChunker, IEmbeddingsClient, IReranker — pipeline interfaces
+  └── StoredArtifact, DocumentAnnotation, IndexingPipelineRecord, ...
+
+aq_data_layer (реализации)
+  ├── PostgresVaultStorage — documents in PostgreSQL
+  ├── PgVectorStorage — vectors in pgvector (+ tsvector hybrid)
+  ├── LocalArtifactStorage — files on disk
+  ├── InMemoryVectorStorage — vectors in RAM (dev/test)
+  ├── SentenceChunker — sentence-boundary chunking
+  ├── OllamaEmbeddingsClient — Ollama HTTP embeddings
+  ├── OllamaReranker — cross-encoder reranking
+  └── RemoteVectorStorage — client-side RPC transport
+```
+
+---
+
+## Документация
+
+| Документ | Описание |
+|---|---|
+| [doc/SESSION_2026_05_01.md](doc/SESSION_2026_05_01.md) | Отчёт текущей сессии |
+| [doc/vector/ARCHITECTURE.md](doc/vector/ARCHITECTURE.md) | Архитектура vector layer |
+| [doc/scenarios/SCENARIOS.md](doc/scenarios/SCENARIOS.md) | Описание всех сценариев |
+| [doc/scenarios/REPORT.md](doc/scenarios/REPORT.md) | Результаты прогона сценариев |
+| [doc/tech_debt/TECH_DEBT.md](doc/tech_debt/TECH_DEBT.md) | Технический долг |
+| [doc/use_cases/VECTOR_USE_CASES.md](doc/use_cases/VECTOR_USE_CASES.md) | Use cases векторной БД |
+| [doc/guides/USAGE_GUIDE.md](doc/guides/USAGE_GUIDE.md) | Полное руководство |
+| [doc/architecture/ARCHITECTURE.md](doc/architecture/ARCHITECTURE.md) | Общая архитектура |
+
+---
+
+## Технический долг
+
+Полный список: [doc/tech_debt/TECH_DEBT.md](doc/tech_debt/TECH_DEBT.md)
+
+Приоритетные:
+- 🔴 `OllamaEmbeddingsClient` — реализован. `OpenAiEmbeddingsClient` — нет
+- 🔴 `PdfExtractor` — нет (только `text/*`)
+- 🟡 `Vault.vectorRepository()` — удобный фасад не реализован
+- 🟡 `embedBatch` лимиты (OpenAI max 2048)

@@ -92,7 +92,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     //
     // Проверяем базовый storage, т.к. он может быть обёрнут в LocalBufferVaultStorage.
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -151,7 +151,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     );
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -184,7 +184,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     final updated = node.copyWith(data: model.toMap());
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -226,7 +226,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     await _clearCurrentFlag(node.entityId);
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -259,7 +259,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     final snapped = node.copyWith(status: VersionStatus.snapshot);
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -282,7 +282,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     );
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -306,7 +306,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<void> deleteEntity(String entityId) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -355,7 +355,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     );
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -421,7 +421,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     );
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -476,7 +476,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     final updated = node.copyWith(isCurrent: true);
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -503,7 +503,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<T?> getCurrent(String entityId) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -524,7 +524,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<T?> getVersion(String nodeId) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final node = baseStorage is ProxyStorage
@@ -646,7 +646,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   }) async {
     // Получить метаданные для проверки owner
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final meta = baseStorage is ProxyStorage
@@ -706,7 +706,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     q = q.orderBy('sequenceNumber');
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final rows = baseStorage is ProxyStorage
@@ -719,7 +719,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<List<VersionNode>> findNodes({VaultQuery? query}) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final rows = baseStorage is ProxyStorage
@@ -732,7 +732,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<PageResult<VersionNode>> findNodesPage(VaultQuery query) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final page = baseStorage is ProxyStorage
@@ -760,7 +760,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Future<void> registerIndex(VaultIndex index) {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     return baseStorage is ProxyStorage
@@ -773,7 +773,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Stream<List<VersionNode>> watchVersions(String entityId) {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final collection = baseStorage is ProxyStorage ? _collection : _nodesCol;
@@ -787,7 +787,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
   @override
   Stream<List<VersionNode>> watchAllEntities({VaultQuery? query}) {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final collection = baseStorage is ProxyStorage ? _collection : _nodesCol;
@@ -804,7 +804,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
 
   Future<VersionNode> _getNodeOrThrow(String nodeId) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     if (baseStorage is ProxyStorage) {
@@ -833,7 +833,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
 
   Future<Map<String, dynamic>> _getMetaOrThrow(String entityId) async {
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final meta = baseStorage is ProxyStorage
@@ -883,7 +883,7 @@ final class VersionedRepositoryImpl<T extends VersionedStorable>
     );
 
     final baseStorage = _storage is LocalBufferVaultStorage
-        ? (_storage as LocalBufferVaultStorage).remote
+        ? _storage.remote
         : _storage;
 
     final collection = baseStorage is ProxyStorage ? _collection : _nodesCol;

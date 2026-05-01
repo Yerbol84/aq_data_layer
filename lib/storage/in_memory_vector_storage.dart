@@ -74,29 +74,50 @@ final class InMemoryVectorStorage implements VectorStorage {
   Future<List<VectorSearchResult>> search(
     String collection,
     List<double> queryVector, {
+    required String tenantId,
     int limit = 10,
     double scoreThreshold = 0.0,
     VaultQuery? filter,
+    String metric = 'cosine',
+    String? sparseQuery,
+    double alpha = 1.0,
   }) async {
     final col = _store[collection];
     if (col == null || col.isEmpty) return [];
 
     var candidates = col.values.toList();
 
-    // Apply payload filter
+    // Mandatory tenant isolation
+    candidates = candidates
+        .where((e) => e.payload['tenantId'] == tenantId)
+        .toList();
+
+    // Apply additional payload filter
     if (filter != null && filter.filters.isNotEmpty) {
       candidates = candidates
           .where((e) => filter.applyFiltersOnly([e.payload]).isNotEmpty)
           .toList();
     }
 
-    // Compute cosine similarity for each candidate
+    // Compute scores
     final scored = candidates.map((e) {
-      final score = _cosineSimilarity(queryVector, e.vector);
+      final denseScore = _cosineSimilarity(queryVector, e.vector);
+
+      double sparseScore = 0.0;
+      if (sparseQuery != null && sparseQuery.isNotEmpty) {
+        final text = (e.payload['text'] as String? ?? '').toLowerCase();
+        final terms = sparseQuery.toLowerCase().split(RegExp(r'\s+'));
+        final hits = terms.where((t) => t.isNotEmpty && text.contains(t)).length;
+        sparseScore = terms.isEmpty ? 0.0 : hits / terms.length;
+      }
+
+      final score = sparseQuery != null
+          ? alpha * denseScore + (1.0 - alpha) * sparseScore
+          : denseScore;
+
       return VectorSearchResult(id: e.id, score: score, payload: e.payload);
     }).toList();
 
-    // Sort descending, apply threshold, take limit
     scored.sort((a, b) => b.score.compareTo(a.score));
     return scored.where((r) => r.score >= scoreThreshold).take(limit).toList();
   }

@@ -1,0 +1,21 @@
+FROM dart:stable AS build
+
+WORKDIR /build
+
+COPY aq_schema/pubspec.yaml aq_schema/
+COPY aq_schema/lib aq_schema/lib
+
+COPY aq_data_layer/pubspec.yaml aq_data_layer/
+COPY aq_data_layer/lib aq_data_layer/lib
+
+COPY aq_data_layer/example/stack/console_client/pubspec.yaml aq_data_layer/example/stack/console_client/
+COPY aq_data_layer/example/stack/console_client/main_rag_basic.dart aq_data_layer/example/stack/console_client/
+
+WORKDIR /build/aq_data_layer/example/stack/console_client
+RUN dart pub get
+RUN dart compile exe main_rag_basic.dart -o rag_basic
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build/aq_data_layer/example/stack/console_client/rag_basic /app/rag_basic
+ENTRYPOINT ["/app/rag_basic"]

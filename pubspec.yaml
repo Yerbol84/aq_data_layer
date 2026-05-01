@@ -1,5 +1,5 @@
 name: dart_vault
-version: 0.4.0
+version: 0.5.0
 description: >
   Universal, interface-driven data storage for Dart.
   Direct (CRUD), Versioned (semver + branches + ACL), Logged (history + rollback),

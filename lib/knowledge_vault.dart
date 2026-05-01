@@ -6,7 +6,7 @@ import 'storage/in_memory_artifact_storage.dart';
 import 'storage/in_memory_vault_storage.dart';
 import 'storage/in_memory_vector_storage.dart';
 import 'storage/knowledge_repository_impl.dart';
-import 'storage/vector_repository_impl.dart';
+import 'storage/simple_vector_repository_impl.dart';
 
 /// Factory for [KnowledgeRepository] and standalone [VectorRepository].
 ///
@@ -78,7 +78,11 @@ final class KnowledgeVault {
     Future.microtask(
       () => vectorStorage.ensureCollection(col, vectorSize: vectorSize),
     );
-    return VectorRepositoryImpl(storage: vectorStorage, collection: col);
+    return SimpleVectorRepositoryImpl(
+      storage: vectorStorage,
+      collection: col,
+      tenantId: tenantId,
+    );
   }
 
   Future<void> dispose() async {

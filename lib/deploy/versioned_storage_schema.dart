@@ -13,7 +13,7 @@ import 'i_storage_schema.dart';
 ///
 /// ## Константы полей
 /// Единственный источник правды для имён полей версионированного хранения.
-/// Заменяет [VersionedStorageContract] (помечен @Deprecated).
+/// DDL и константы для versioned storage.
 final class VersionedStorageSchema implements IStorageSchema {
   @override
   final String collection;

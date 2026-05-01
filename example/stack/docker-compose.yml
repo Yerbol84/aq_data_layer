@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_DB: vault_db
       POSTGRES_USER: vault_user
@@ -14,6 +12,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   server:
     build:
@@ -28,9 +39,18 @@ services:
       DB_USER: vault_user
       DB_PASSWORD: vault_pass
       SERVER_PORT: 8765
+      ARTIFACT_PATH: /data/artifacts
+      SECURITY_MODE: mock
+      VECTOR_DIM: 768
+      VECTOR_EMBEDDER_ID: ollama-nomic-embed-text
+    volumes:
+      - artifacts_data:/data/artifacts
     depends_on:
       postgres:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
 
   scenarios:
     build:
@@ -43,12 +63,10 @@ services:
     profiles:
       - run
 
-  client:
+  stress:
     build:
       context: ../../..
-      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.client
-      args:
-        ENTRY: main.dart
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.stress
     environment:
       VAULT_ENDPOINT: http://server:8765
     depends_on:
@@ -56,12 +74,10 @@ services:
     profiles:
       - run
 
-  client_comprehensive:
+  security:
     build:
       context: ../../..
-      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.client
-      args:
-        ENTRY: main_comprehensive.dart
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.security
     environment:
       VAULT_ENDPOINT: http://server:8765
     depends_on:
@@ -69,12 +85,10 @@ services:
     profiles:
       - run
 
-  client_soft_delete:
+  artifacts:
     build:
       context: ../../..
-      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.client
-      args:
-        ENTRY: main_soft_delete_test.dart
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.artifacts
     environment:
       VAULT_ENDPOINT: http://server:8765
     depends_on:
@@ -82,15 +96,172 @@ services:
     profiles:
       - run
 
-  client_no_cleanup:
+  vector:
     build:
       context: ../../..
-      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.client
-      args:
-        ENTRY: main_no_cleanup.dart
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.vector
     environment:
       VAULT_ENDPOINT: http://server:8765
     depends_on:
       - server
     profiles:
       - run
+
+  knowledge:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.knowledge
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+    depends_on:
+      - server
+    profiles:
+      - run
+
+  rag_basic:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.rag_basic
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_core:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_core
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_precision:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_precision
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_lifecycle:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_lifecycle
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_concurrent:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_concurrent
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_chunking:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_chunking
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_reranker:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_reranker
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+      OLLAMA_LLM_MODEL: llama3.2:1b
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  integration_rag:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.integration_rag
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  integration_annotations:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.integration_annotations
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  search_migration:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.search_migration
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+  perf_latency:
+    build:
+      context: ../../..
+      dockerfile: aq_data_layer/example/stack/console_client/Dockerfile.perf_latency
+    environment:
+      VAULT_ENDPOINT: http://server:8765
+      OLLAMA_ENDPOINT: http://ollama:11434
+    depends_on:
+      - server
+      - ollama
+    profiles:
+      - run
+
+volumes:
+  artifacts_data:
+  ollama_data:

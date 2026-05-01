@@ -49,13 +49,19 @@ import 'vault_command_dispatcher.dart';
 final class VaultRegistry {
   final VaultStorage Function(String tenantId) _storageFactory;
   final SchemaDeployer _deployer;
+  final ArtifactStorage? _artifactBackend;
+  final IVectorStoreRegistry? _vectorRegistry;
   final _domains = <String, DomainRegistration>{};
 
   VaultRegistry({
     required VaultStorage Function(String tenantId) storageFactory,
     SchemaDeployer? deployer,
+    ArtifactStorage? artifactBackend,
+    IVectorStoreRegistry? vectorRegistry,
   })  : _storageFactory = storageFactory,
-        _deployer = deployer ?? InMemorySchemaDeployer();
+        _deployer = deployer ?? InMemorySchemaDeployer(),
+        _artifactBackend = artifactBackend,
+        _vectorRegistry = vectorRegistry;
 
   /// Проверяет, зарегистрирована ли коллекция в registry.
   bool isRegistered(String collection) => _domains.containsKey(collection);
@@ -106,8 +112,138 @@ final class VaultRegistry {
     required String operation,
     required Map<String, dynamic> args,
     required String tenantId,
+    Map<String, String> headers = const {},
   }) async {
-    // ── Валидация входных данных ──────────────────────────────────────────
+    // ── Security check ────────────────────────────────────────────────────
+    final protocol = IVaultSecurityProtocol.instance;
+    if (protocol != null) {
+      final claims = await protocol.extractClaims(headers);
+      final action = _operationToAction(operation);
+      final entityId = args['id'] as String? ?? args['entityId'] as String?;
+      final decision = await switch (action) {
+        'read' => protocol.canRead(claims: claims, collection: collection, entityId: entityId),
+        'delete' => protocol.canDelete(claims: claims, collection: collection, entityId: entityId ?? ''),
+        'publish' => protocol.canPublish(claims: claims, collection: collection, entityId: entityId ?? ''),
+        'grant' => protocol.canGrant(
+            claims: claims, collection: collection, entityId: entityId ?? '',
+            targetUserId: args['actorId'] as String? ?? '', level: AccessLevel.read),
+        _ => protocol.canWrite(claims: claims, collection: collection, entityId: entityId, data: args),
+      };
+      if (!decision.allowed) {
+        throw VaultAccessDeniedException(decision.reason ?? 'Access denied');
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+    // ── Artifact binary operations ────────────────────────────────────────
+    if (collection == StoredArtifact.kCollection &&
+        (operation == 'uploadBytes' || operation == 'downloadBytes' ||
+         operation == 'deleteBytes' || operation == 'deleteBytesPrefix' ||
+         operation == 'listBytes')) {
+      final backend = _artifactBackend;
+      if (backend == null) {
+        throw VaultStorageException(
+            'No ArtifactStorage configured on this server');
+      }
+      return switch (operation) {
+        'uploadBytes' => () async {
+            final key = args['key'] as String;
+            final bytes = base64Decode(args['bytes'] as String);
+            final contentType = args['contentType'] as String? ?? 'application/octet-stream';
+            await backend.put(key, bytes, contentType: contentType);
+            return {'key': key, 'sizeBytes': bytes.length};
+          }(),
+        'downloadBytes' => () async {
+            final key = args['key'] as String;
+            final bytes = await backend.get(key);
+            if (bytes == null) throw VaultNotFoundException('Artifact not found: $key');
+            return {'bytes': base64Encode(bytes)};
+          }(),
+        'deleteBytes' => () async {
+            await backend.delete(args['key'] as String);
+            return null;
+          }(),
+        'deleteBytesPrefix' => () async {
+            await backend.deleteByPrefix(args['prefix'] as String);
+            return null;
+          }(),
+        'listBytes' => backend.list(args['prefix'] as String),
+        _ => throw VaultStorageException('Unknown artifact operation: $operation'),
+      };
+    }
+    // ── Vector operations ─────────────────────────────────────────────────
+    if (collection == '__vectors' ||
+        (operation == 'vectorUpsert' || operation == 'vectorSearch' ||
+         operation == 'vectorDelete' || operation == 'vectorEnsure')) {
+      final vr = _vectorRegistry;
+      if (vr == null) {
+        throw VaultStorageException('No VectorStorage configured on this server');
+      }
+      return switch (operation) {
+        'vectorEnsure' => () async {
+            final storeId = args['storeId'] as String;
+            final col = args['collection'] as String;
+            final dim = args['vectorDim'] as int;
+            final storage = vr.resolve(storeId);
+            await storage.ensureCollection(col, vectorSize: dim);
+            return null;
+          }(),
+        'vectorUpsert' => () async {
+            final storeId = args['storeId'] as String;
+            final col = args['collection'] as String;
+            final storage = vr.resolve(storeId);
+            final entries = (args['entries'] as List)
+                .cast<Map<String, dynamic>>()
+                .map(VectorEntry.fromMap)
+                .toList();
+            await storage.upsertAll(col, entries);
+            return {'count': entries.length};
+          }(),
+        'vectorSearch' => () async {
+            final storeId = args['storeId'] as String;
+            final col = args['collection'] as String;
+            final storage = vr.resolve(storeId);
+            final queryVector = (args['vector'] as List).cast<double>();
+            // Reconstruct VaultQuery from serialized filter map
+            final filterMap = args['filter'] as Map<String, dynamic>?;
+            VaultQuery? filter;
+            if (filterMap != null && filterMap.isNotEmpty) {
+              filter = VaultQuery(filters: filterMap.entries
+                  .map((e) => VaultFilter(e.key, VaultOperator.equals, e.value))
+                  .toList());
+            }
+            final results = await storage.search(
+              col,
+              queryVector,
+              tenantId: tenantId,
+              limit: args['limit'] as int? ?? 10,
+              scoreThreshold: (args['scoreThreshold'] as num?)?.toDouble() ?? 0.0,
+              sparseQuery: args['sparseQuery'] as String?,
+              alpha: (args['alpha'] as num?)?.toDouble() ?? 1.0,
+              filter: filter,
+            );
+            return results.map((r) => {
+              'id': r.id,
+              'score': r.score,
+              'payload': r.payload,
+            }).toList();
+          }(),
+        'vectorDelete' => () async {
+            final storeId = args['storeId'] as String;
+            final col = args['collection'] as String;
+            final storage = vr.resolve(storeId);
+            final artifactId = args['artifactId'] as String;
+            await storage.deleteWhere(
+              col,
+              VaultQuery(filters: [
+                VaultFilter('artifactId', VaultOperator.equals, artifactId),
+              ]),
+            );
+            return null;
+          }(),
+        _ => throw VaultStorageException('Unknown vector operation: $operation'),
+      };
+    }
+    // ─────────────────────────────────────────────────────────────────────
     if (tenantId.trim().isEmpty) {
       throw VaultStorageException('tenantId cannot be empty');
     }
@@ -578,4 +714,15 @@ final class VaultRegistry {
         throw VaultStorageException('Operation "$operation" not supported for internal collections');
     }
   }
+
+  static String _operationToAction(String operation) => switch (operation) {
+    'findById' || 'findAll' || 'findPage' || 'count' ||
+    'listVersions' || 'getCurrent' || 'getLatestPublished' ||
+    'getHistory' || 'listGrants' || 'findAllIncludingDeleted' ||
+    'get' || 'query' || 'exists' => 'read',
+    'delete' || 'deleteEntity' => 'delete',
+    'publishDraft' => 'publish',
+    'grantAccess' => 'grant',
+    _ => 'write',
+  };
 }

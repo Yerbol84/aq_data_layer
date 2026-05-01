@@ -1,195 +1,188 @@
-# Развёртывание dart_vault Data Service
+# Развёртывание dart_vault
 
-## Локальное развёртывание через Docker
+---
 
-### Предварительные требования
+## Требования
 
-- Docker и Docker Compose установлены
-- Порты 5432 (PostgreSQL) и 8765 (Data Service) свободны
+- Docker + Docker Compose
+- Dart SDK ≥ 3.0 (для локальной разработки)
+- 4GB RAM минимум (Ollama + pgvector)
+- 2GB свободного места (модели Ollama)
 
-### Быстрый старт
+---
 
-```bash
-cd /app/work/deploys/aq_studio_dl_stack
-
-# Остановить существующие контейнеры (если есть)
-docker compose down
-
-# Пересобрать data_service с последними изменениями
-docker compose build --no-cache data_service
-
-# Запустить стек (PostgreSQL + Data Service)
-docker compose up -d
-
-# Проверить логи
-docker compose logs -f data_service
-
-# Проверить статус
-docker compose ps
-```
-
-### Структура стека
-
-```
-aq_studio_dl_stack/
-├── docker-compose.yml       # Конфигурация стека
-├── .env                      # Переменные окружения
-├── init-db.sh               # Инициализация PostgreSQL
-└── aq_studio_data/          # Данные PostgreSQL (volume)
-```
-
-### Компоненты
-
-**1. PostgreSQL (postgres:14-alpine)**
-- База данных: `aq_studio`
-- Пользователь admin: `aq` / `aq_secret`
-- Пользователь приложения: `aq_app` / `aq_app_secret` (без RLS bypass)
-- Порт: 5432
-
-**2. Data Service (aq_studio_data_service)**
-- Регистрирует все домены из `AqDomains.all`
-- Автоматически создаёт таблицы через `PostgresSchemaDeployer`
-- Поддерживает RLS (Row Level Security) для multi-tenancy
-- Порт: 8765
-
-### Переменные окружения (.env)
+## Быстрый старт (Docker)
 
 ```bash
-# PostgreSQL
-POSTGRES_DB=aq_studio
-POSTGRES_USER=aq
-POSTGRES_PASSWORD=aq_secret
-POSTGRES_PORT=5432
+cd example/stack
 
-# Data Service
-DATA_SERVICE_PORT=8765
+# 1. Поднять стек
+docker-compose up -d
 
-# Timezone
-TZ=UTC
+# 2. Установить модель эмбеддингов (один раз)
+docker exec stack-ollama-1 ollama pull nomic-embed-text
+
+# 3. Проверить что всё работает
+curl http://localhost:8765/vault/v1/health
+# → {"status":"healthy","timestamp":"..."}
+
+# 4. Запустить базовый сценарий
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  -e OLLAMA_ENDPOINT=http://stack-ollama-1:11434 \
+  stack-rag_basic
 ```
 
-### Проверка работоспособности
+---
+
+## Компоненты стека
+
+### postgres (pgvector/pgvector:pg15)
+
+PostgreSQL с расширением pgvector. Хранит:
+- Все документы (direct/versioned/logged)
+- Метаданные артефактов
+- Векторные эмбеддинги (таблицы `*__vectors`)
+- Справочники pipeline и store
+
+**Порт:** 5432 (проброшен на хост для прямого доступа)
+
+### ollama (ollama/ollama:latest)
+
+Локальный LLM сервер. Используется для:
+- Генерации эмбеддингов (`nomic-embed-text`, 768-dim)
+- Реранкинга (`llama3.2:1b` или другая модель)
+
+**Порт:** 11434
+
+**Модели:**
+```bash
+# Эмбеддинги (обязательно)
+docker exec stack-ollama-1 ollama pull nomic-embed-text  # 274MB
+
+# Реранкер (опционально)
+docker exec stack-ollama-1 ollama pull llama3.2:1b       # 1.3GB
+```
+
+### server (dart_vault сервер)
+
+HTTP RPC сервер. Обрабатывает все запросы клиентов.
+
+**Порт:** 8765
+
+**Переменные окружения:**
 
 ```bash
-# Проверить PostgreSQL
-docker compose exec postgres psql -U aq -d aq_studio -c "\dt"
-
-# Проверить Data Service
-curl http://localhost:8765/health
-
-# Handshake с Data Service
-curl -X POST http://localhost:8765/vault/handshake \
-  -H "Content-Type: application/json" \
-  -d '{"tenantId": "test-user"}'
+DB_HOST=postgres          # PostgreSQL хост
+DB_PORT=5432
+DB_NAME=vault_db
+DB_USER=vault_user
+DB_PASSWORD=vault_pass
+SERVER_PORT=8765
+ARTIFACT_PATH=/data/artifacts  # Путь для файлов
+SECURITY_MODE=mock             # mock | (пусто = без security)
+VECTOR_DIM=768                 # Размерность векторов
+VECTOR_EMBEDDER_ID=ollama-nomic-embed-text
 ```
 
-### Остановка и очистка
+---
+
+## Запуск сценариев
+
+Все сценарии — одноразовые контейнеры. Стартуют, выполняют работу, завершаются.
 
 ```bash
-# Остановить контейнеры
-docker compose down
+# Базовые
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  stack-artifacts
 
-# Остановить и удалить данные
-docker compose down -v
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  stack-vector
 
-# Полная очистка (включая образы)
-docker compose down -v --rmi all
+# С Ollama
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  -e OLLAMA_ENDPOINT=http://stack-ollama-1:11434 \
+  stack-search_core
+
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  -e OLLAMA_ENDPOINT=http://stack-ollama-1:11434 \
+  stack-search_precision
+
+# Reranker (нужна LLM модель)
+docker exec stack-ollama-1 ollama pull llama3.2:1b
+docker run --rm --network stack_default \
+  -e VAULT_ENDPOINT=http://stack-server-1:8765 \
+  -e OLLAMA_ENDPOINT=http://stack-ollama-1:11434 \
+  -e OLLAMA_LLM_MODEL=llama3.2:1b \
+  stack-search_reranker
 ```
 
-## Разработка без Docker
+---
 
-### Запуск PostgreSQL локально
+## Просмотр данных
 
 ```bash
-# Установить PostgreSQL 14+
-brew install postgresql@14  # macOS
-apt install postgresql-14   # Ubuntu
+# Файлы в artifact storage
+docker run --rm -v stack_artifacts_data:/data alpine find /data -type f
 
-# Создать базу данных
-createdb aq_studio
+# Векторные таблицы в PostgreSQL
+docker exec stack-postgres-1 psql -U vault_user -d vault_db \
+  -c "SELECT tablename FROM pg_tables WHERE tablename LIKE '%vectors%';"
 
-# Создать пользователя приложения
-psql aq_studio -c "CREATE ROLE aq_app WITH LOGIN PASSWORD 'aq_app_secret';"
-psql aq_studio -c "GRANT ALL PRIVILEGES ON DATABASE aq_studio TO aq_app;"
+# Содержимое векторной таблицы
+docker exec stack-postgres-1 psql -U vault_user -d vault_db \
+  -c "SELECT id, payload->>'artifactId', payload->>'text' FROM sp_tenant__vectors LIMIT 5;"
+
+# Логи сервера
+docker-compose logs server -f
 ```
 
-### Запуск Data Service локально
+---
+
+## Пересборка после изменений
 
 ```bash
-cd /app/work/server_apps/aq_studio_data_service
+# Пересобрать сервер
+docker-compose build --no-cache server
+docker-compose up -d
 
-# Установить зависимости
-dart pub get
+# Пересобрать конкретный сценарий
+docker-compose build --no-cache search_core
 
-# Установить переменные окружения
-export PG_HOST=localhost
-export PG_PORT=5432
-export PG_DB=aq_studio
-export PG_USER=aq_app
-export PG_PASSWORD=aq_app_secret
-export PORT=8765
-
-# Запустить сервис
-dart run bin/server.dart
+# Пересобрать всё
+docker-compose build --no-cache
 ```
 
-## Интеграция с Flutter приложением
+---
 
-После запуска стека, подключите Flutter приложение:
-
-```dart
-import 'package:dart_vault/dart_vault.dart';
-
-void main() async {
-  // Подключиться к локальному Data Service
-  await Vault.connect(
-    'http://localhost:8765',
-    tenantId: 'user-123',
-  );
-
-  runApp(MyApp());
-}
-```
-
-## Troubleshooting
-
-### Data Service не запускается
+## Сброс данных
 
 ```bash
-# Проверить логи
-docker compose logs data_service
+# Остановить стек
+docker-compose down
 
-# Проверить подключение к PostgreSQL
-docker compose exec data_service ping postgres
+# Удалить все данные (включая векторы и файлы)
+docker volume rm stack_artifacts_data stack_ollama_data
+docker volume rm $(docker volume ls -q | grep stack_)
+
+# Запустить заново
+docker-compose up -d
+docker exec stack-ollama-1 ollama pull nomic-embed-text
 ```
 
-### PostgreSQL не принимает подключения
+---
 
-```bash
-# Проверить статус
-docker compose exec postgres pg_isready -U aq
+## Production checklist
 
-# Проверить логи
-docker compose logs postgres
-```
-
-### Порты заняты
-
-```bash
-# Изменить порты в .env
-POSTGRES_PORT=5433
-DATA_SERVICE_PORT=8766
-
-# Пересоздать контейнеры
-docker compose up -d --force-recreate
-```
-
-## Production deployment
-
-Для production используйте:
-- Managed PostgreSQL (AWS RDS, Google Cloud SQL, Supabase)
-- Kubernetes для Data Service
-- Secrets Manager для паролей
-- Load Balancer для масштабирования
-
-См. документацию в `doc/guides/PRODUCTION_DEPLOYMENT.md`
+- [ ] Заменить `SECURITY_MODE=mock` на реальную реализацию `IVaultSecurityProtocol`
+- [ ] Заменить `LocalArtifactStorage` на S3/MinIO для файлов
+- [ ] Настроить SSL для PostgreSQL (`SslMode.require`)
+- [ ] Вынести пароли в secrets manager (не в docker-compose.yml)
+- [ ] Настроить backup для PostgreSQL volume
+- [ ] Увеличить `maxConnectionCount` в Pool под нагрузку
+- [ ] Настроить мониторинг (healthcheck уже есть на `/vault/v1/health`)
+- [ ] Для > 500k векторов рассмотреть QdrantVectorStorage вместо pgvector

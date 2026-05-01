@@ -15,6 +15,16 @@ void main() async {
   final dbPassword = Platform.environment['DB_PASSWORD'] ?? 'vault_pass';
   final serverPort = int.parse(Platform.environment['SERVER_PORT'] ?? '8765');
 
+  // Security mode: 'mock' enables MockVaultSecurityProtocol (for testing)
+  // Default: null (no security — all allowed)
+  final securityMode = Platform.environment['SECURITY_MODE'];
+  if (securityMode == 'mock') {
+    IVaultSecurityProtocol.initialize(MockVaultSecurityProtocol());
+    print('🔒 Security mode: MOCK (test tokens active)');
+  } else {
+    print('🔓 Security mode: DISABLED (all operations allowed)');
+  }
+
   print('🚀 Starting Data Service Server...');
   print('📊 Database: $dbHost:$dbPort/$dbName');
 
@@ -34,6 +44,29 @@ void main() async {
     ),
   );
 
+  // Artifact binary storage (optional — enabled via ARTIFACT_PATH env var)
+  final artifactPath = Platform.environment['ARTIFACT_PATH'];
+  if (artifactPath != null) {
+    print('📦 Artifact storage: $artifactPath');
+  }
+
+  // Vector storage — pgvector backed, registered in global registry
+  // VECTOR_DIM: 8 for mock, 768 for nomic-embed-text, 1024 for mxbai-embed-large
+  final vectorDim = int.parse(Platform.environment['VECTOR_DIM'] ?? '768');
+  final vectorEmbedderId = Platform.environment['VECTOR_EMBEDDER_ID'] ?? 'ollama-nomic-embed-text';
+  final vectorStorage = PgVectorStorage(pool: pool);
+  final vectorRegistry = VectorStoreRegistryImpl();
+  vectorRegistry.register(
+    VectorStoreDescriptor(
+      id: 'pgvector-main',
+      type: 'pgvector',
+      embedderId: vectorEmbedderId,
+      vectorDim: vectorDim,
+    ),
+    vectorStorage,
+  );
+  print('🔍 Vector storage: pgvector (store=pgvector-main dim=$vectorDim embedder=$vectorEmbedderId)');
+
   // Register ALL AQ platform domains from AqDomains.all (single source of truth)
   final registry = VaultRegistry(
     storageFactory: (tenantId) => PostgresVaultStorage(
@@ -41,6 +74,8 @@ void main() async {
       tenantId: tenantId,
     ),
     deployer: PostgresSchemaDeployer(pool: pool),
+    artifactBackend: artifactPath != null ? LocalArtifactStorage(basePath: artifactPath) : null,
+    vectorRegistry: vectorRegistry,
   );
 
   for (final domain in AqDomains.all) {
@@ -102,6 +137,9 @@ Handler _handleRpc(VaultRegistry registry) {
         operation: json['operation'] as String,
         args: json['args'] as Map<String, dynamic>,
         tenantId: json['tenantId'] as String,
+        headers: Map<String, String>.fromEntries(
+          request.headers.entries.map((e) => MapEntry(e.key, e.value)),
+        ),
       );
       return Response.ok(
         jsonEncode({'success': true, 'data': result}),
@@ -136,7 +174,7 @@ Middleware _corsHeaders() {
 String _errorCode(Object e) {
   final s = e.toString();
   if (s.contains('not found') || s.contains('NotFoundException')) return 'NOT_FOUND';
-  if (s.contains('access denied')) return 'ACCESS_DENIED';
+  if (s.contains('Access denied') || s.contains('VaultAccessDeniedException')) return 'ACCESS_DENIED';
   if (s.contains('state') || s.contains('StateException')) return 'STATE_ERROR';
   return 'STORAGE_ERROR';
 }

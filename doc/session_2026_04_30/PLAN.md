@@ -159,6 +159,16 @@ pgvector (PostgreSQL extension)
 
 ---
 
+## Известное поведение (не баги)
+
+### listVersions не возвращает branch-draft узлы
+`repo.listVersions(entityId)` возвращает только published и main-draft узлы.
+Branch-draft узлы (созданные через `createBranch`) в список не попадают.
+Это поведение по дизайну — ветки живут отдельно до момента публикации.
+Если нужно получить данные ветки — используй `branch.data` из результата `createBranch()`.
+
+---
+
 ## Технический долг
 
 - `supabase_vault_storage.dart` — warnings (strict_raw_type, unnecessary_non_null_assertion)

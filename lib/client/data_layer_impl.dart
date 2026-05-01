@@ -149,11 +149,13 @@ final class DataLayerImpl implements IDataLayer {
     required String endpoint,
     String tenantId = 'system',
     bool useBuffer = true,
+    String? authToken,
   }) async {
     final vault = await Vault.remote(
       endpoint: endpoint,
       tenantId: tenantId,
       useBuffer: useBuffer,
+      authToken: authToken,
     );
 
     return DataLayerImpl._(

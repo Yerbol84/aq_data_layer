@@ -40,9 +40,12 @@ abstract interface class VectorRepository {
 
   Future<List<VectorSearchResult>> search(
     List<double> queryVector, {
+    required String tenantId,
     int limit = 10,
     double scoreThreshold = 0.0,
     VaultQuery? filter,
+    String? sparseQuery,
+    double alpha = 1.0,
   });
 
   // ── Read ───────────────────────────────────────────────────────────────────

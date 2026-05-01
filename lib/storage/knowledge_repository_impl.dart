@@ -194,6 +194,7 @@ final class KnowledgeRepositoryImpl<T extends KnowledgeDocument>
     final results = await _vectorStorage.search(
       _vectorCollection,
       queryVector,
+      tenantId: _tenantPrefix.isNotEmpty ? _tenantPrefix : 'system',
       limit: limit,
       scoreThreshold: scoreThreshold,
       filter: filter,

@@ -201,10 +201,12 @@ final class Vault {
     String tenantId = 'system',
     bool useBuffer = true,
     bool failFast = false,
+    String? authToken,
   }) async {
     final remoteStorage = RemoteVaultStorage(
       endpoint: endpoint,
       tenantId: tenantId,
+      authToken: authToken,
     );
     try {
       await remoteStorage.connect();

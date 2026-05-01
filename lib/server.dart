@@ -66,6 +66,7 @@ export 'storage/supabase_vault_storage.dart';
 export 'storage/postgres/postgres_vault_storage.dart';
 export 'storage/postgres/postgres_schema_deployer.dart';
 export 'storage/postgres/postgres_versioned_repository.dart';
+export 'storage/postgres/pg_vector_storage.dart';
 export 'storage/sql/i_sql_query_compiler.dart';
 export 'storage/sql/postgres_query_compiler.dart';
 export 'storage/sql/sql_vault_storage.dart';
@@ -78,7 +79,14 @@ export 'storage/knowledge_repository_impl.dart';
 export 'storage/in_memory_artifact_storage.dart';
 export 'storage/local_artifact_storage.dart';
 export 'storage/in_memory_vector_storage.dart';
-export 'storage/versioned_storage_contract.dart';
+export 'vector/vector_store_registry_impl.dart';
+export 'vector/mock_embeddings_client.dart';
+export 'vector/mock_chunker.dart';
+export 'vector/sentence_chunker.dart';
+export 'vector/plain_text_extractor.dart';
+export 'vector/passthrough_reranker.dart';
+export 'vector/ollama_reranker.dart';
+export 'vector/ollama_embeddings_client.dart';
 
 // ── Remote storage (для клиент-серверной архитектуры) ─────────────────────
 export 'client/remote/remote_vault_storage.dart';
