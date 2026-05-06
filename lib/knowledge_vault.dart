@@ -1,7 +1,5 @@
 import 'package:aq_schema/aq_schema.dart';
 
-import 'repositories/knowledge_repository.dart';
-import 'repositories/vector_repository.dart';
 import 'storage/in_memory_artifact_storage.dart';
 import 'storage/in_memory_vault_storage.dart';
 import 'storage/in_memory_vector_storage.dart';
@@ -45,12 +43,12 @@ final class KnowledgeVault {
         vectorStorage = vectorStorage ?? InMemoryVectorStorage();
 
   /// Create a combined file+vector repository.
-  KnowledgeRepository<T> documents<T extends KnowledgeDocument>({
+  IKnowledgeRepository<T> documents<T extends KnowledgeDocument>({
     required String collection,
     required int vectorSize,
     required T Function(Map<String, dynamic>) fromMap,
     required EmbedFn embed,
-    TextSplitter? splitter,
+    ITextSplitter? splitter,
   }) {
     final col = _qualify(collection);
     return KnowledgeRepositoryImpl<T>(
@@ -67,7 +65,7 @@ final class KnowledgeVault {
   }
 
   /// Create a standalone vector repository (no file storage).
-  VectorRepository vectors({
+  IVectorRepository vectors({
     required String collection,
     required int vectorSize,
     String distance = 'cosine',
@@ -81,7 +79,6 @@ final class KnowledgeVault {
     return SimpleVectorRepositoryImpl(
       storage: vectorStorage,
       collection: col,
-      tenantId: tenantId,
     );
   }
 

@@ -1,34 +1,43 @@
 import 'package:aq_schema/aq_schema.dart';
 
-import '../repositories/vector_repository.dart';
-
-/// Simple VectorStorage wrapper implementing VectorRepository.
-/// Used by KnowledgeVault for standalone vector collections.
-final class SimpleVectorRepositoryImpl implements VectorRepository {
+/// Thin wrapper over [VectorStorage] implementing [IVectorRepository].
+///
+/// Binds a single [collection] to a [VectorStorage] backend.
+/// All operations delegate to the underlying storage.
+final class SimpleVectorRepositoryImpl implements IVectorRepository {
   final VectorStorage _storage;
   final String _collection;
+  final int _vectorSize;
 
   SimpleVectorRepositoryImpl({
     required VectorStorage storage,
     required String collection,
-    String tenantId = 'system', // kept for API compatibility, passed by caller
+    int vectorSize = 768,
   })  : _storage = storage,
-        _collection = collection;
+        _collection = collection,
+        _vectorSize = vectorSize;
+
+  Future<void> _ensureCollection() =>
+      _storage.ensureCollection(_collection, vectorSize: _vectorSize);
 
   @override
-  Future<void> upsert(VectorEntry entry) =>
-      _storage.upsert(_collection, entry);
+  Future<void> upsert(VectorEntry vectorEntry) async {
+    await _ensureCollection();
+    await _storage.upsert(_collection, vectorEntry);
+  }
 
   @override
-  Future<void> upsertAll(List<VectorEntry> entries) =>
-      _storage.upsertAll(_collection, entries);
+  Future<void> upsertAll(List<VectorEntry> vectorEntries) async {
+    await _ensureCollection();
+    await _storage.upsertAll(_collection, vectorEntries);
+  }
 
   @override
   Future<void> delete(String id) => _storage.delete(_collection, id);
 
   @override
-  Future<void> deleteWhere(VaultQuery filter) =>
-      _storage.deleteWhere(_collection, filter);
+  Future<void> deleteWhere(VaultQuery vaultQuery) =>
+      _storage.deleteWhere(_collection, vaultQuery);
 
   @override
   Future<List<VectorSearchResult>> search(
@@ -59,18 +68,15 @@ final class SimpleVectorRepositoryImpl implements VectorRepository {
       _storage.getAll(_collection, filter: filter);
 
   @override
-  Future<PageResult<VectorEntry>> getPage(VaultQuery query) async {
-    final all = await getAll();
-    final filtered = query.applyFiltersOnly(
-      all.map((e) => e.toMap()).toList(),
-    );
-    final total = filtered.length;
-    final paged = query.apply(filtered);
+  Future<PageResult<VectorEntry>> getPage(VaultQuery vaultQuery) async {
+    final all = await _storage.getAll(_collection);
+    final offset = vaultQuery.offset ?? 0;
+    final limit = vaultQuery.limit ?? all.length;
     return PageResult(
-      items: paged.map(VectorEntry.fromMap).toList(),
-      total: total,
-      offset: query.offset ?? 0,
-      limit: query.limit ?? total,
+      items: all.skip(offset).take(limit).toList(),
+      total: all.length,
+      offset: offset,
+      limit: limit,
     );
   }
 

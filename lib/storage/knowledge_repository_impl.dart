@@ -2,11 +2,9 @@ import 'dart:async';
 
 import 'package:aq_schema/aq_schema.dart';
 
-import '../repositories/knowledge_repository.dart';
-
 import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 
-/// Default implementation of [KnowledgeRepository].
+/// Default implementation of [IKnowledgeRepository].
 ///
 /// Orchestrates three backends:
 /// - [_binaryStore]   — raw file bytes ([ArtifactStorage])
@@ -23,7 +21,7 @@ import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 /// Not the responsibility of this package.  Encrypt [fileBytes] before
 /// calling [save]; decrypt after [loadBytes].
 final class KnowledgeRepositoryImpl<T extends KnowledgeDocument>
-    implements KnowledgeRepository<T> {
+    implements IKnowledgeRepository<T> {
   final ArtifactStorage _binaryStore;
   final VaultStorage _metaStorage;
   final VectorStorage _vectorStorage;
@@ -32,7 +30,7 @@ final class KnowledgeRepositoryImpl<T extends KnowledgeDocument>
   final String _tenantPrefix;
   final int _vectorSize;
   final T Function(Map<String, dynamic>) _fromMap;
-  final TextSplitter _splitter;
+  final ITextSplitter _splitter;
   final EmbedFn _embed;
 
   KnowledgeRepositoryImpl({
@@ -43,7 +41,7 @@ final class KnowledgeRepositoryImpl<T extends KnowledgeDocument>
     required int vectorSize,
     required T Function(Map<String, dynamic>) fromMap,
     required EmbedFn embed,
-    TextSplitter? splitter,
+    ITextSplitter? splitter,
     String tenantPrefix = '',
   })  : _binaryStore = binaryStore,
         _metaStorage = metaStorage,

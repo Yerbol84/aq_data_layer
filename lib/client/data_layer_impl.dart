@@ -7,6 +7,11 @@ import 'package:aq_schema/aq_schema.dart';
 import 'vault.dart';
 import 'remote/remote_vault_storage.dart';
 import '../storage/local_buffer_vault_storage.dart';
+import '../storage/artifact_repository_impl.dart';
+import '../storage/knowledge_repository_impl.dart';
+import '../storage/simple_vector_repository_impl.dart';
+import '../storage/in_memory_artifact_storage.dart';
+import '../storage/in_memory_vector_storage.dart';
 
 /// Implementation of [IDataLayer] that wraps [Vault].
 ///
@@ -67,6 +72,43 @@ final class DataLayerImpl implements IDataLayer {
       captureFullSnapshot: captureFullSnapshot,
     );
   }
+
+  @override
+  IArtifactRepository<T> artifacts<T extends ArtifactEntry>({
+    required String collection,
+    required T Function(Map<String, dynamic>) fromMap,
+  }) =>
+      ArtifactRepositoryImpl<T>(
+        binaryStore: InMemoryArtifactStorage(),
+        metaStorage: _vault.storage,
+        collection: collection,
+        fromMap: fromMap,
+        tenantPrefix: _vault.tenantId == 'system' ? '' : _vault.tenantId,
+      );
+
+  @override
+  IVectorRepository vectors({required String collection}) =>
+      SimpleVectorRepositoryImpl(
+        storage: InMemoryVectorStorage(),
+        collection: collection,
+      );
+
+  @override
+  IKnowledgeRepository<T> knowledge<T extends KnowledgeDocument>({
+    required String collection,
+    required T Function(Map<String, dynamic>) fromMap,
+    required EmbedFn embed,
+  }) =>
+      KnowledgeRepositoryImpl<T>(
+        binaryStore: InMemoryArtifactStorage(),
+        metaStorage: _vault.storage,
+        vectorStorage: InMemoryVectorStorage(),
+        collection: collection,
+        vectorSize: 768,
+        fromMap: fromMap,
+        embed: embed,
+        tenantPrefix: _vault.tenantId == 'system' ? '' : _vault.tenantId,
+      );
 
   // ══════════════════════════════════════════════════════════════════════════
   // Buffer Management

@@ -1,0 +1,13 @@
+name: dart_vault_scenarios
+description: Scenarios for all storage types in 3 modes (mock, local_db, remote)
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  dart_vault:
+    path: ../..
+  aq_schema:
+    path: ../../../../aq_schema

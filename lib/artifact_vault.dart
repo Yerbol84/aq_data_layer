@@ -1,6 +1,5 @@
 import 'package:aq_schema/aq_schema.dart';
 
-import 'repositories/artifact_repository.dart';
 import 'storage/artifact_repository_impl.dart';
 import 'storage/in_memory_artifact_storage.dart';
 import 'storage/in_memory_vault_storage.dart';
@@ -34,7 +33,7 @@ final class ArtifactVault {
   })  : binaryStore = binaryStore ?? InMemoryArtifactStorage(),
         metaStorage = metaStorage ?? InMemoryVaultStorage();
 
-  ArtifactRepository<T> artifacts<T extends ArtifactEntry>({
+  IArtifactRepository<T> artifacts<T extends ArtifactEntry>({
     required String collection,
     required T Function(Map<String, dynamic>) fromMap,
   }) {

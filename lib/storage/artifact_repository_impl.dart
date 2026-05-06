@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'package:aq_schema/aq_schema.dart';
 
-import '../repositories/artifact_repository.dart';
-
 import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 
-/// Default implementation of [ArtifactRepository].
+/// Default implementation of [IArtifactRepository].
 ///
 /// Uses two backends:
 /// - [_binaryStore]  ([ArtifactStorage]) — raw file bytes
@@ -19,7 +17,7 @@ import '../storage/direct_repository_impl.dart' show watchWithBuffer;
 /// Encrypt the bytes before calling [save] and decrypt after [loadBytes].
 /// The repository stores and returns whatever bytes it receives.
 final class ArtifactRepositoryImpl<T extends ArtifactEntry>
-    implements ArtifactRepository<T> {
+    implements IArtifactRepository<T> {
   final ArtifactStorage _binaryStore;
   final VaultStorage _metaStorage;
   final String _collection;

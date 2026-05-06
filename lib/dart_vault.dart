@@ -57,19 +57,17 @@ export 'client/remote/remote_vault_storage.dart' show RemoteVaultStorage;
 export 'client/remote/remote_artifact_storage.dart' show RemoteArtifactStorage;
 export 'client/remote/remote_vector_storage.dart' show RemoteVectorStorage;
 
-// ── Репозитории из aq_schema (source of truth) ────────────────────────────
+// ── Специализированные репозитории из aq_schema ───────────────────────────
 export 'package:aq_schema/aq_schema.dart'
     show
         IDataLayer,
         DirectRepository,
         VersionedRepository,
         LoggedRepository,
+        IArtifactRepository,
+        IVectorRepository,
+        IKnowledgeRepository,
         IAuthContext;
-
-// ── Специализированные репозитории (dart_vault specific) ──────────────────
-export 'repositories/artifact_repository.dart';
-export 'repositories/vector_repository.dart';
-export 'repositories/knowledge_repository.dart';
 
 // ── Vector pipeline implementations ───────────────────────────────────────
 export 'vector/mock_embeddings_client.dart';
